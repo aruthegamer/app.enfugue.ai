@@ -9,7 +9,8 @@
 
 import torch
 import torch.nn as nn
-from diffusers.models.resnet import Upsample2D, Downsample2D, LoRACompatibleConv, LoRACompatibleLinear
+from diffusers.models.resnet import Upsample2D, Downsample2D
+from diffusers.models.lora import LoRACompatibleConv, LoRACompatibleLinear
 from einops import rearrange
 
 

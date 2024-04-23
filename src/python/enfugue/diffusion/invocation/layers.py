@@ -29,13 +29,14 @@ from math import floor
 from random import randint
 
 from enfugue.util import (
-    logger,
+    dilate_erode,
     fit_image,
     get_frames_or_image,
     get_frames_or_image_from_file,
-    dilate_erode,
-    redact_images_from_metadata,
+    logger,
+    merge_prompts,
     redact_for_log,
+    redact_images_from_metadata,
 )
 
 from enfugue.diffusion.constants import *
@@ -68,6 +69,7 @@ class LayeredInvocation:
     lycoris: Optional[Union[str, List[str], Tuple[str, float], List[Union[str, Tuple[str, float]]]]]=None
     inversion: Optional[Union[str, List[str]]]=None
     ip_adapter_model: Optional[IP_ADAPTER_LITERAL]=None
+    text_encoder_model: Optional[TEXT_ENCODER_LITERAL]=None
     safe: Optional[bool]=None
     scheduler: Optional[SCHEDULER_LITERAL]=None
     scheduler_beta_start: Optional[float]=None
@@ -105,6 +107,9 @@ class LayeredInvocation:
     noise_offset: Optional[float]=None
     noise_method: NOISE_METHOD_LITERAL="perlin"
     noise_blend_method: LATENT_BLEND_METHOD_LITERAL="inject"
+    guidance_rescale: Optional[float]=None
+    pag_scale: Optional[float]=None
+    pag_adaptive_scaling: Optional[float]=None
     # Animation
     animation_engine: Optional[ANIMATION_ENGINE_LITERAL]=None
     animation_frames: Optional[int]=None
@@ -118,6 +123,8 @@ class LayeredInvocation:
     position_encoding_truncate_length: Optional[int]=None
     position_encoding_scale_length: Optional[int]=None
     num_denoising_iterations: Optional[int]=None
+    ad_hsxl_padding: Optional[int]=16
+    use_freenoise_windowing: bool=False
     # stable video
     svd_model: Optional[Literal["svd", "svd_xt"]]=None
     motion_bucket_id: int=127
@@ -137,7 +144,7 @@ class LayeredInvocation:
     crop_inpaint: bool=True
     scale_inpaint: bool=True
     inpaint_feather: int=32
-    inpaint_upscale_amount: float=1.0
+    inpaint_upscale: float=0.0
     outpaint: bool=True
     outpaint_dilate: int=4
     # Refining
@@ -167,7 +174,7 @@ class LayeredInvocation:
     detailer_controlnet: Optional[CONTROLNET_LITERAL]=None
     detailer_controlnet_scale: float=1.0
     detailer_switch_pipeline: bool=False
-    detailer_upscale_amount: float=0.5
+    detailer_upscale: float=0.0
     upscale: Optional[Union[UpscaleStepDict, List[UpscaleStepDict]]]=None
     interpolate_frames: Optional[int]=None
     interpolate_model: Literal["rife", "film"]="film"
@@ -181,20 +188,10 @@ class LayeredInvocation:
         return 256
 
     @staticmethod
-    def merge_prompts(*args: Tuple[Optional[str], float]) -> Optional[str]:
-        """
-        Merges prompts if they are not null
-        """
-        if all([not prompt for prompt, weight in args]):
-            return None
-        return "".join([
-            f"({prompt}){weight}"
-            for prompt, weight in args
-            if prompt
-        ])
-
-    @staticmethod
-    def parse_frame_range(frames: Optional[Union[int, List[int], str]], one_index: bool = False) -> Optional[List[int]]:
+    def parse_frame_range(
+        frames: Optional[Union[int, List[int], str]],
+        one_index: bool = False
+    ) -> Optional[List[int]]:
         """
         Parses a comma-separated frame string
         """
@@ -206,7 +203,7 @@ class LayeredInvocation:
             frames.sort()
             return frames
         elif isinstance(frames, str) and len(frames) > 0:
-            frame_parts = frames.split(",")
+            frame_parts = frames.split(";")
             frame_indexes: List[int] = []
             for frame_part in frame_parts:
                 frame_range = frame_part.split("-")
@@ -501,8 +498,27 @@ class LayeredInvocation:
             "refiner_negative_prompt": self.refiner_negative_prompt,
             "refiner_negative_prompt_2": self.refiner_negative_prompt_2,
             "ip_adapter_model": self.ip_adapter_model,
-            "clip_skip": self.clip_skip
+            "text_encoder_model": self.text_encoder_model,
+            "clip_skip": self.clip_skip,
+            "guidance_rescale": self.guidance_rescale,
+            "pag_scale": self.pag_scale,
+            "pag_adaptive_scaling": self.pag_adaptive_scaling,
+            "use_freenoise_windowing": self.use_freenoise_windowing,
         }
+
+    def merge_prompts(self, *args: Tuple[Optional[str], float]) -> Optional[str]:
+        """
+        Merges prompts if they are not null
+        """
+        if all([not prompt for prompt, weight in args]):
+            return None
+        if self.text_encoder_model == "T5-XL":
+            return merge_prompts(*args)
+        return "".join([
+            f"({prompt}){weight}"
+            for prompt, weight in args
+            if prompt
+        ])
 
     def remove_alpha(
         self,
@@ -745,7 +761,6 @@ class LayeredInvocation:
             if animation_frames and frames is not None:
                 layer["frame"] = frames
 
-
             if isinstance(layer["image"], list):
                 # Minimize the number of images we pass
                 if animation_frames:
@@ -862,7 +877,7 @@ class LayeredInvocation:
             ):
                 continue
 
-            if "noise" in key and not has_noise:
+            if "noise" in key and "freenoise" not in key and not has_noise:
                 continue
 
             minimal_keys.append(key)
@@ -1062,7 +1077,10 @@ class LayeredInvocation:
 
                 if layer.get("visibility", None) in ["visible", "denoised"]:
                     for frame in layer_frames:
-                        visible_frames[frame] = True
+                        try:
+                            visible_frames[frame] = True
+                        except IndexError:
+                            logger.warning(f"Frame index {frame} requested, but is out of bounds (0-{self.animation_frames-1})")
                 control_units = layer.get("control_units", None)
                 if control_units:
                     for control_unit in control_units:
@@ -1124,6 +1142,7 @@ class LayeredInvocation:
                     offset_y = layer.get("offset_y", None)
                     opacity = layer.get("opacity", None)
                     remove_background = layer.get("remove_background", None)
+                    used_default_frames = False
                     frames = self.parse_frame_range(layer.get("frame", None), False)
 
                     # Capabilities of layer
@@ -1197,6 +1216,7 @@ class LayeredInvocation:
                         if isinstance(fit_layer_image, list):
                             fit_layer_images = len(fit_layer_image)
                             if frames is None:
+                                used_default_frames = True
                                 if isinstance(invocation_image, list):
                                     frames = list(range(len(invocation_image)))
                                 else:
@@ -1234,7 +1254,7 @@ class LayeredInvocation:
                             ip_image = Image.new("RGB", (x1-x0, y1-y0), (0,0,0)) # Full black
                             ip_image.paste(layer_image, (-x0, -y0), mask=face_mask.convert("L"))
                         else:
-                            ip_image = layer_image
+                            ip_image = fit_layer_image
 
                         ip_adapter_images.append({
                             "image": ip_image,
@@ -1271,7 +1291,7 @@ class LayeredInvocation:
                                 "start": control_unit.get("start", 0.0),
                                 "end": control_unit.get("end", 1.0),
                                 "scale": control_unit.get("scale", 1.0),
-                                "frame": frames,
+                                "frame": [0] if used_default_frames else frames,
                                 "image": control_image,
                             })
 
@@ -1550,11 +1570,11 @@ class LayeredInvocation:
 
                 # Prepare the pipeline manager
                 self.prepare_pipeline(pipeline)
+                add_ad_hsxl_padding = False
+                inpaint_size = self.tiling_size if self.tiling_size else 1024 if pipeline.inpainter_is_sdxl else 512
 
                 # Determine if we're doing cropped inpainting
                 if invocation_kwargs.get("mask", None) is not None and self.crop_inpaint:
-                    inpaint_size = self.tiling_size if self.tiling_size else 1024 if pipeline.inpainter_is_sdxl else 512
-
                     (x0, y0), (x1, y1) = self.get_inpaint_bounding_box(
                         invocation_kwargs["mask"],
                         size=inpaint_size if not self.scale_inpaint else 64,
@@ -1579,6 +1599,9 @@ class LayeredInvocation:
                         logger.debug(
                             f"Calculated pixel area savings of {pixel_savings:.1f}% are insufficient, will not crop"
                         )
+                elif invocation_kwargs.get("animation_frames", None) and self.animation_engine != "svd" and self.ad_hsxl_padding and (invocation_kwargs["width"] > inpaint_size or invocation_kwargs["height"] > inpaint_size) and False:
+                    cropped_inpaint_position = (0, 0, invocation_kwargs["width"], invocation_kwargs["height"])
+                    add_ad_hsxl_padding = True
 
                 if cropped_inpaint_position is not None:
                     # Get copies prior to crop
@@ -1603,6 +1626,10 @@ class LayeredInvocation:
                         def pasted_image_callback(images: List[Image]) -> None:
                             """
                             Paste the images then callback.
+                            The crop-and-resize looks funny but it's correct,
+                            it ensures the inpaint is the same size as the original,
+                            regardless of whether the new image is larger than the original
+                            or smaller.
                             """
                             if isinstance(background, list):
                                 images = [
@@ -1633,23 +1660,31 @@ class LayeredInvocation:
                             img.crop(cropped_inpaint_position)
                             for img in invocation_kwargs["image"]
                         ]
-                        invocation_kwargs["mask"] = [
-                            img.crop(cropped_inpaint_position)
-                            for img in invocation_kwargs["mask"]
-                        ]
+                        if "mask" in invocation_kwargs:
+                            invocation_kwargs["mask"] = [
+                                img.crop(cropped_inpaint_position)
+                                for img in invocation_kwargs["mask"]
+                            ]
                     else:
                         invocation_kwargs["image"] = invocation_kwargs["image"].crop(cropped_inpaint_position)
-                        invocation_kwargs["mask"] = invocation_kwargs["mask"].crop(cropped_inpaint_position)
+                        if "mask" in invocation_kwargs:
+                            invocation_kwargs["mask"] = invocation_kwargs["mask"].crop(cropped_inpaint_position)
 
                     # Also crop control images
                     if "control_images" in invocation_kwargs:
                         for controlnet in invocation_kwargs["control_images"]:
                             for image_dict in invocation_kwargs["control_images"][controlnet]:
-                                image_dict["image"] = image_dict["image"].crop(cropped_inpaint_position)
+                                if isinstance(image_dict["image"], list):
+                                    image_dict["image"] = [
+                                        img.crop(cropped_inpaint_position)
+                                        for img in image_dict["image"]
+                                    ]
+                                else:
+                                    image_dict["image"] = image_dict["image"].crop(cropped_inpaint_position)
 
                     # Scale images if needed
                     if self.scale_inpaint and (inpaint_size > original_width or inpaint_size > original_height):
-                        scale_size = inpaint_size / max(original_width, original_height) + self.inpaint_upscale_amount
+                        scale_size = inpaint_size / max(original_width, original_height) + self.inpaint_upscale
                         logger.debug(f"Scaling inpaint by {scale_size}")
                         width = int(((width * scale_size) // 8) * 8)
                         height = int(((height * scale_size) // 8) * 8)
@@ -1658,17 +1693,60 @@ class LayeredInvocation:
                                 img.resize((width, height))
                                 for img in invocation_kwargs["image"]
                             ]
-                            invocation_kwargs["mask"] = [
-                                img.resize((width, height), resample=PIL_INTERPOLATION["nearest"])
-                                for img in invocation_kwargs["mask"]
-                            ]
+                            if "mask" in invocation_kwargs:
+                                invocation_kwargs["mask"] = [
+                                    img.resize((width, height), resample=PIL_INTERPOLATION["nearest"])
+                                    for img in invocation_kwargs["mask"]
+                                ]
                         else:
                             invocation_kwargs["image"] = invocation_kwargs["image"].resize((width, height))
-                            invocation_kwargs["mask"] = invocation_kwargs["mask"].resize((width, height), resample=PIL_INTERPOLATION["nearest"])
+                            if "mask" in invocation_kwargs:
+                                invocation_kwargs["mask"] = invocation_kwargs["mask"].resize((width, height), resample=PIL_INTERPOLATION["nearest"])
 
                     # Assign height and width
                     invocation_kwargs["width"] = width
                     invocation_kwargs["height"] = height
+
+                if add_ad_hsxl_padding:
+                    # For some reason, AD/HSXL adds a gray border to the images, only on the bottom or right.
+                    # We therefore add this padding to the images before processing, then remove it after.
+                    from PIL import Image
+                    logger.info(f"Adding {self.ad_hsxl_padding}px padding to images for AD-HSXL")
+                    invocation_kwargs["width"] += self.ad_hsxl_padding
+                    invocation_kwargs["height"] += self.ad_hsxl_padding
+                    image_size = (invocation_kwargs["width"], invocation_kwargs["height"])
+
+                    if isinstance(invocation_kwargs["image"], list):
+                        new_images = [Image.new("RGB", image_size, (0,0,0)) for _ in invocation_kwargs["image"]]
+                        for i, img in enumerate(invocation_kwargs["image"]):
+                            new_images[i].paste(img)
+                        invocation_kwargs["image"] = new_images
+                    else:
+                        new_image = Image.new("RGB", image_size, (0,0,0))
+                        new_image.paste(invocation_kwargs["image"])
+                        invocation_kwargs["image"] = new_image
+                    if "mask" in invocation_kwargs:
+                        if isinstance(invocation_kwargs["mask"], list):
+                            new_masks = [Image.new("L", image_size, 0) for _ in invocation_kwargs["mask"]]
+                            for i, img in enumerate(invocation_kwargs["mask"]):
+                                new_masks[i].paste(img)
+                            invocation_kwargs["mask"] = new_masks
+                        else:
+                            new_mask = Image.new("L", image_size, 0)
+                            new_mask.paste(invocation_kwargs["mask"])
+                            invocation_kwargs["mask"] = new_mask
+                    if "control_images" in invocation_kwargs:
+                        for controlnet in invocation_kwargs["control_images"]:
+                            for image_dict in invocation_kwargs["control_images"][controlnet]:
+                                if isinstance(image_dict["image"], list):
+                                    new_images = [Image.new("RGB", image_size, (0,0,0)) for _ in image_dict["image"]]
+                                    for i, img in enumerate(image_dict["image"]):
+                                        new_images[i].paste(img)
+                                    image_dict["image"] = new_images
+                                else:
+                                    new_image = Image.new("RGB", image_size, (0,0,0))
+                                    new_image.paste(image_dict["image"])
+                                    image_dict["image"] = new_image
 
                 # Execute primary inference
                 results, nsfw = self.execute_inference(
@@ -1901,12 +1979,22 @@ class LayeredInvocation:
             else:
                 iteration_image_callback = None  # type: ignore
 
+            is_xl = False
             if invocation_kwargs.get("animation_frames", None):
                 pipeline.animator_controlnets = controlnets # type: ignore[assignment]
+                is_xl = pipeline.animator_is_sdxl
             elif invocation_kwargs.get("mask", None):
                 pipeline.inpainter_controlnets = controlnets # type: ignore[assignment]
+                is_xl = pipeline.inpainter_is_sdxl
             else:
                 pipeline.controlnets = controlnets # type: ignore[assignment]
+                is_xl = pipeline.is_sdxl
+
+            if invocation_kwargs.get("pag_scale", None):
+                if is_xl:
+                    invocation_kwargs["pag_applied_layers"] = ["mid"]
+                else:
+                    invocation_kwargs["pag_applied_layers_index"] = ["m0"]
 
             result = pipeline(
                 latent_callback=iteration_image_callback,
@@ -2429,7 +2517,7 @@ class LayeredInvocation:
             inference_width = original_width
             inference_height = original_height
 
-            scale_factor = (inpaint_size / max(original_width, original_height)) + self.detailer_upscale_amount
+            scale_factor = (inpaint_size / max(original_width, original_height)) + self.detailer_upscale
 
             if scale_factor > 1:
                 inference_width *= scale_factor
@@ -2496,7 +2584,7 @@ class LayeredInvocation:
             }
 
             # If the pipeline has an IP adapter, pass the image through that
-            if inpainter_ip_adapter is not None:
+            if inpainter_ip_adapter is not None or detail_pipeline.ip_adapter_loaded:
                 # Extend the image crop up and to the sides to get hair for face ID
                 ix0 = max(x0 - 16, 0)
                 ix1 = min(x1 + 16, width-1)

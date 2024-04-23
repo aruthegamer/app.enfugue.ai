@@ -1136,6 +1136,7 @@ class Application {
                 addedLayer = await this.layers.addImageLayer(image);
             }
             await sleep(1); // Sleep 1 frame
+            await addedLayer.form.setValue("visibility", "visible");
             await addedLayer.editorNode.scaleCanvasToSize();
         } catch(e) {
             console.error(e);

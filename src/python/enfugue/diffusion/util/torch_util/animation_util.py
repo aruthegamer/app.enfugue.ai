@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Optional, Union, Tuple, List, TYPE_CHECKING
 from enfugue.diffusion.constants import MotionVectorPointDict
+from functools import cache
 
 if TYPE_CHECKING:
     import numpy.ndarray as NDArray
@@ -31,7 +32,7 @@ __all__ = [
     "flow_condition_to_image_sequence"
 ]
 
-
+@cache
 def get_frame_views(
     video_length: int,
     window_size: int=16,
@@ -48,6 +49,7 @@ def get_frame_views(
         views.append((t_start,t_end))
     return views
 
+@cache
 def get_frame_weight_sequence(n: int) -> List[int]:
     """
     Gets a list of weights for merging context windows
@@ -278,6 +280,7 @@ def get_point_along_vector(
             return get_segment_point(vector[i], vector[i+1], this_t)
     return vector[-1]["anchor"]
 
+@cache
 def get_gaussian_kernel(
     kernel_size: int=199,
     sigma: int=20,

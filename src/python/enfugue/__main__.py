@@ -183,6 +183,9 @@ def dump_config(filename: Optional[str] = None, json: bool = False) -> None:
 @click.option("-k", "--top-k", help="The number of tokens to limit to when selecting the next token in a response.", default=50, show_default=True)
 @click.option("-p", "--top-p", help="The p-value of tokens to limit from when selecting the next token in a response.", default=0.95, show_default=True)
 @click.option("-f", "--forgetful", help="Enable 'forgetful' mode - i.e. refresh the conversation after each response.", is_flag=True, default=False)
+@click.option("--gemma", help="Use the Gemma model.", is_flag=True, default=False)
+@click.option("--smaug", help="Use the Smaug model.", is_flag=True, default=False)
+@click.option("--luxia", help="Use the Luxia model.", is_flag=True, default=False)
 @main.command(short_help="Starts a chat with an LLM.")
 def chat(
     config: Optional[str] = None,
@@ -195,7 +198,10 @@ def chat(
     temperature: float=0.7,
     top_k: int=50,
     top_p: float=0.95,
-    forgetful: bool = False
+    forgetful: bool = False,
+    gemma: bool = False,
+    smaug: bool = False,
+    luxia: bool = False
 ) -> None:
     """
     Runs an interactive chat in the command line.
@@ -209,17 +215,21 @@ def chat(
     from enfugue.diffusion.manager import DiffusionPipelineManager
     manager = DiffusionPipelineManager(configuration)
 
+    model = "luxia" if luxia else "smaug" if smaug else "gemma" if gemma else "zephyr"
+
     with get_context(debug):
         click.echo(termcolor.colored("Loading language model. Say 'reset' at any time to start the conversation over. Use Ctrl+D to exit or say 'exit.'", "yellow"))
         if unsafe:
             click.echo(termcolor.colored("Safety is disengaged. Responses may be inappropriate or offensive, user discretion is advised.", "red"))
-        with manager.conversation.converse(
+        with manager.language.converse(
             role=role,
+            model=model,
             system=system,
             safe=not unsafe,
             temperature=temperature,
             top_k=top_k,
-            top_p=top_p
+            top_p=top_p,
+            use_system=system != "none" and system != "null"
         ) as chat:
             try:
                 click.echo(termcolor.colored("[assistant] {0}".format(chat()), "cyan")) # First message
@@ -234,6 +244,10 @@ def chat(
                     )
                     if forgetful:
                         chat("RESET")
+            except Exception as ex:
+                if debug:
+                    logger.error(traceback.format_exc())
+                raise
             finally:
                 click.echo("Goodbye!")
 
@@ -276,13 +290,28 @@ def run(
     finally:
         click.echo("Goodbye!")
 
+@main.command(short_help="Runs the discord bot.")
+@click.argument("token")
+@click.option("-p", "--prefix", help="Sets the command prefix.", default="$", show_default=True)
+@click.option("-d", "--debug", help="Enable debug logging.", is_flag=True, default=False)
+def discord(
+    token: str,
+    prefix: str = "$",
+    debug: bool = False
+) -> None:
+    """
+    Runs the discord bot.
+    """
+    from enfugue.discord.bot import EnfugueDiscordBot
+    with get_context(debug):
+        EnfugueDiscordBot.execute(token, command_prefix=prefix)
+
 @click.argument("file_path")
 @click.option("-d", "--debug", help="Enable debug logging.", is_flag=True, default=False)
 @click.option("-s", "--seconds", help="The number of seconds to limit reading to.", default=300.0, show_default=True)
 @click.option("-r", "--rate", help="The number of FFT samples to get per second.", default=8, show_default=True)
 @click.option("-b", "--bands", help="The number of bands to limit to (linearly spaced).", default=512, show_default=True)
 @click.option("-l", "--low-filter", help="A low pass, under which will be set to 0.", default=0.3, show_default=True)
-
 @main.command(short_help="Analyzes the audio spectrum across an input file.")
 def spectralyze(
     file_path: str,

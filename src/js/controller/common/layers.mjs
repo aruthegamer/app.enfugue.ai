@@ -499,49 +499,49 @@ class LayerView extends View {
         }
 
         node.content(
-                await this.hideShowLayer.getNode(),
-                await this.lockUnlockLayer.getNode(),
-                E.div().class("title").content(nameNode, subtitleNode),
-                await this.previewImage.getNode(),
-                E.button().content("&times;").class("close").on("click", () => this.remove())
-            )
-            .attr("draggable", "true")
-            .on("dragstart", (e) => {
-                e.dataTransfer.effectAllowed = "move";
-                this.controller.draggedLayer = this;
-                this.addClass("dragging");
-            })
-            .on("dragleave", (e) => {
-                this.removeClass("drag-target-below").removeClass("drag-target-above");
-                if (this.controller.dragTarget === this) {
-                    this.controller.dragTarget = null;
+            await this.hideShowLayer.getNode(),
+            await this.lockUnlockLayer.getNode(),
+            E.div().class("title").content(nameNode, subtitleNode),
+            await this.previewImage.getNode(),
+            E.button().content("&times;").class("close").on("click", () => this.remove())
+        )
+        .attr("draggable", "true")
+        .on("dragstart", (e) => {
+            e.dataTransfer.effectAllowed = "move";
+            this.controller.draggedLayer = this;
+            this.addClass("dragging");
+        })
+        .on("dragleave", (e) => {
+            this.removeClass("drag-target-below").removeClass("drag-target-above");
+            if (this.controller.dragTarget === this) {
+                this.controller.dragTarget = null;
+            }
+        })
+        .on("dragover", (e) => {
+            if (this.controller.draggedLayer !== this) {
+                let dropBelow = e.layerY > e.target.getBoundingClientRect().height / 2;
+                if (dropBelow) {
+                    this.removeClass("drag-target-above").addClass("drag-target-below");
+                } else {
+                    this.addClass("drag-target-above").removeClass("drag-target-below");
                 }
-            })
-            .on("dragover", (e) => {
-                if (this.controller.draggedLayer !== this) {
-                    let dropBelow = e.layerY > e.target.getBoundingClientRect().height / 2;
-                    if (dropBelow) {
-                        this.removeClass("drag-target-above").addClass("drag-target-below");
-                    } else {
-                        this.addClass("drag-target-above").removeClass("drag-target-below");
-                    }
-                    this.controller.dragTarget = this;
-                    this.controller.dropBelow = dropBelow;
-                }
-            })
-            .on("dragend", (e) => {
-                this.controller.dragEnd();
-                this.removeClass("dragging").removeClass("drag-target-below").removeClass("drag-target-above");
-                e.preventDefault();
-                e.stopPropagation();
-            })
-            .on("click", (e) => {
-                this.controller.activate(this);
-            })
-            .on("drop", (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-            });
+                this.controller.dragTarget = this;
+                this.controller.dropBelow = dropBelow;
+            }
+        })
+        .on("dragend", (e) => {
+            this.controller.dragEnd();
+            this.removeClass("dragging").removeClass("drag-target-below").removeClass("drag-target-above");
+            e.preventDefault();
+            e.stopPropagation();
+        })
+        .on("click", (e) => {
+            this.controller.activate(this);
+        })
+        .on("drop", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        });
 
         return node;
     }

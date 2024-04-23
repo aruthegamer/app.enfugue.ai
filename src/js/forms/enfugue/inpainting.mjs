@@ -52,6 +52,17 @@ class InpaintingFormView extends FormView {
                     "step": 1,
                     "tooltip": "The number of pixels to use as a blending region for cropped inpainting. These will be blended smoothly into the final image to relieve situations where the cropped inpaint is noticably different from the rest of the image."
                 }
+            },
+            "inpaintUpscale": {
+                "label": "Inpainting Upscale Factor",
+                "class": NumberInputView,
+                "config": {
+                    "min": 0.0,
+                    "max": 16.0,
+                    "value": 0.0,
+                    "step": 0.1,
+                    "tooltip": "The amount to upscale the image before inpainting. This can help with inpainting on low resolution images or when inpainting small detailed regions."
+                }
             }
         }
     };

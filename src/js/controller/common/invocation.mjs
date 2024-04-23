@@ -356,6 +356,57 @@ class InvocationController extends Controller {
     }
 
     /**
+     * @return float The guidance rescale (opt)
+     */
+    get guidanceRescale() {
+        return this.kwargs.guidance_rescale || 0.0;
+    }
+
+    /**
+     * @param float newGuidanceRescale Sets a new guidance rescale.
+     */
+    set guidanceRescale(newGuidanceRescale) {
+        if (this.guidanceRescale !== newGuidanceRescale) {
+            this.publish("engineGuidanceRescaleChange", newGuidanceRescale);
+        }
+        this.kwargs.guidance_rescale = newGuidanceRescale;
+    }
+
+    /**
+     * @return float The PAG scale (self-attention guidance)
+     */
+    get perturbedGuidanceScale() {
+        return this.kwargs.pag_scale || 0.0;
+    }
+
+    /**
+     * @param float newPerturbedGuidanceScale Sets a new PAG scale.
+     */
+    set perturbedGuidanceScale(newPerturbedGuidanceScale) {
+        if (this.perturbedGuidanceScale !== newPerturbedGuidanceScale) {
+            this.publish("enginePerturbedGuidanceScaleChange", newPerturbedGuidanceScale);
+        }
+        this.kwargs.pag_scale = newPerturbedGuidanceScale;
+    }
+
+    /**
+     * @return float The adaptive guidance scale
+     */
+    get perturbedAdaptiveGuidanceScale() {
+        return this.kwargs.pag_adaptive_scaling || 0.0;
+    }
+
+    /**
+     * @param float newPerturbedAdaptiveGuidanceScale Sets a new adaptive guidance scale.
+     */
+    set perturbedAdaptiveGuidanceScale(newPerturbedAdaptiveGuidanceScale) {
+        if (this.perturbedAdaptiveGuidanceScale !== newPerturbedAdaptiveGuidanceScale) {
+            this.publish("enginePerturbedAdaptiveGuidanceScaleChange", newPerturbedAdaptiveGuidanceScale);
+        }
+        this.kwargs.pag_adaptive_scaling = newPerturbedAdaptiveGuidanceScale;
+    }
+
+    /**
      * @return int The number of denoising steps.
      */
     get inferenceSteps() {
@@ -470,6 +521,23 @@ class InvocationController extends Controller {
             this.publish("engineIpAdapterModelChange", newModel);
         }
         this.kwargs.ip_adapter_model = newModel;
+    }
+
+    /**
+     * @return str The text encoder model
+     */
+    get textEncoder() {
+        return this.kwargs.text_encoder_model || null;
+    }
+
+    /**
+     * @param str The text encoder model
+     */
+    set textEncoder(newModel) {
+        if (this.textEncoderModel !== newModel) {
+            this.publish("engineTextEncoderModelChange", newModel);
+        }
+        this.kwargs.text_encoder_model = newModel;
     }
 
     /**
@@ -1214,6 +1282,23 @@ class InvocationController extends Controller {
     }
 
     /**
+     * @return bool Whether or not to use FreeNoise windowing
+     */
+    get animationFreeNoiseWindowing() {
+        return this.kwargs.use_freenoise_windowing || false;
+    }
+
+    /**
+     * @param bool Whether or not to use FreeNoise windowing
+     */
+    set animationFreeNoiseWindowing(newWindowing) {
+        if (this.animationFreeNoiseWindowing !== newWindowing) {
+            this.publish("engineAnimationFreeNoiseWindowingChange", newWindowing);
+        }
+        this.kwargs.use_freenoise_windowing = newWindowing;
+    }
+
+    /**
      * @return int Animation frame rate
      */
     get animationRate() {
@@ -1317,6 +1402,23 @@ class InvocationController extends Controller {
             this.publish("engineInpaintFeatherChange", newFeather);
         }
         this.kwargs.inpaint_feather = newFeather;
+    }
+
+    /**
+     * @return float The inpaint upscale amount
+     */
+    get inpaintUpscale() {
+        return this.kwargs.inpaint_upscale || 0.0;
+    }
+
+    /**
+     * @param float The inpaint upscale amount
+     */
+    set inpaintUpscale(newUpscale) {
+        if (this.inpaintUpscale !== newUpscale) {
+            this.publish("engineInpaintUpscaleChange", newUpscale);
+        }
+        this.kwargs.inpaint_upscale = newUpscale;
     }
 
     /**
@@ -1470,6 +1572,23 @@ class InvocationController extends Controller {
             this.publish("engineDetailerControlnetScaleChange");
         }
         this.kwargs.detailer_controlnet_scale = detailControlnetScale;
+    }
+
+    /**
+     * @return float detailer upscale amount
+     */
+    get detailerUpscale() {
+        return this.kwargs.detailer_upscale || 0.5;
+    }
+
+    /**
+     * @param float detailer upscale amount
+     */
+    set detailerUpscale(newUpscale) {
+        if (this.detailerUpscale !== newUpscale) {
+            this.publish("engineDetailerUpscaleChange", newUpscale);
+        }
+        this.kwargs.detailer_upscale = newUpscale;
     }
 
     /**
@@ -1757,6 +1876,10 @@ class InvocationController extends Controller {
      * Sets the sample images on the canvas and chooser
      */
     setSampleImages(images, isAnimation = false) {
+        // Divide frames
+        let imageDivider = Math.ceil(images.length / 64);
+        images = images.filter((_, index) => index % imageDivider === 0);
+
         // Get IDs from images
         this.application.samples.setSamples(
             images,
@@ -1851,6 +1974,7 @@ class InvocationController extends Controller {
                 if (!isEmpty(invokeResult.images)) {
                     let imagePaths = invokeResult.images.map((imageName) => `/api/invocation/${imageName}`),
                         isCompleted = invokeResult.status === "completed";
+
                     onImagesReceived(imagePaths, isCompleted);
                 }
                 if (!isEmpty(invokeResult.video)) {

@@ -238,7 +238,9 @@ class EnfugueAPIInvocationController(EnfugueAPIControllerBase):
         """
         plan = CaptionInvocation(
             prompts=request.parsed["prompts"],
-            num_results_per_prompt=request.parsed.get("num_results_per_prompt", 1)
+            num_results_per_prompt=request.parsed.get("num_results_per_prompt", 1),
+            prompt_format=request.parsed.get("prompt_format", None),
+            model=request.parsed.get("model", None),
         )
         return self.invoke(
             request.token.user.id,

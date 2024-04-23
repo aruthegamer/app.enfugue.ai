@@ -46,6 +46,7 @@ class AnimationController extends Controller {
                 "animationRate": 8,
                 "animationDecodeChunkSize": 1,
                 "animationDenoisingIterations": 1,
+                "animationFreeNoiseWindowing": false,
                 "animationInterpolation": null,
                 "stableVideoAnimationFrames": 14,
                 "stableVideoMotionBucketId": 127,
@@ -183,6 +184,7 @@ class AnimationController extends Controller {
                     this.hideMotionVectors();
                     this.engine.animationEngine = "ad_hsxl";
                     this.engine.animationDenoisingIterations = values.animationDenoisingIterations;
+                    this.engine.animationFreeNoiseWindowing = values.animationFreeNoiseWindowing;
                     this.engine.animationLoop = values.animationLoop;
 
                     if (values.animationMotionScaleEnabled) {

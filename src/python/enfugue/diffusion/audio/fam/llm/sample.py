@@ -2,6 +2,7 @@
 # adapted from https://github.com/metavoiceio/metavoice-src/
 import dataclasses
 import hashlib
+import warnings
 import json
 import os
 import pathlib
@@ -10,7 +11,7 @@ import subprocess
 import tempfile
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import List, Literal, Optional, Type
+from typing import List, Literal, Optional, Type, Dict, Any
 
 import librosa
 import torch
@@ -37,7 +38,7 @@ class InferenceConfig:
     dtype: str = "bfloat16"
     compile: bool = False
     init_from: str = "resume"  # either 'resume' (from an out_dir) or a gpt2 variant (e.g. 'gpt2-xl')
-    decoder_kwargs = dataclasses.field(default_factory=dict)
+    decoder_kwargs: Dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def __str__(self):
         field_strs = []
@@ -231,9 +232,11 @@ class Model:
                     assert batch_size is not None
 
                     if max(seq_lens) + max_new_tokens >= self.model.config.block_size:
-                        raise Exception(
-                            f"max_new_tokens {max_new_tokens} too large! Choose {self.model.config.block_size - max(seq_lens) - 1} instead."
+                        new_max = self.model.config.block_size - max(seq_lens) - 1
+                        warnings.warn(
+                            f"max_new_tokens {max_new_tokens} too large! Choosing {new_max} instead."
                         )
+                        max_new_tokens = new_max
 
                     y = self.model.generate(
                         x,

@@ -29,11 +29,16 @@ from enfugue.diffusion.animate.diff.unet_blocks import (
 from enfugue.diffusion.animate.diff.resnet import (
     LoRACompatibleInflatedConv3d,
     InflatedConv3d,
-    InflatedGroupNorm
+    InflatedGroupNorm,
+    FusionBlock2D
 )
-
-logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
-
+from enfugue.diffusion.animate.diff.attention_processor import (
+    AttnProcessor as CustomAttnProcessor,
+    LoRAAttnProcessor as CustomLoRAAttnProcessor,
+    PoseAdapterAttnProcessor,
+    LoRAPoseAdapterAttnProcessor,
+)
+from enfugue.util import logger
 
 @dataclass
 class UNet3DConditionOutput(BaseOutput):
@@ -255,6 +260,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
             self.conv_norm_out = nn.GroupNorm(num_channels=block_out_channels[0], num_groups=norm_num_groups, eps=norm_eps)
 
         self.conv_act = nn.SiLU()
+
         if use_lora_compatible_layers:
             self.conv_out = LoRACompatibleInflatedConv3d(block_out_channels[0], out_channels, kernel_size=3, padding=1)
         else:

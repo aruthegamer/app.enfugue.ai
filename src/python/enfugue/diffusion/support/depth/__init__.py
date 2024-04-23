@@ -1,5 +1,5 @@
-from enfugue.diffusion.support.depth.detect import DepthDetector
+from enfugue.diffusion.support.depth.detect import DepthNormalDetector
 
-DepthDetector  # Silence importchecker
+DepthNormalDetector  # Silence importchecker
 
-__all__ = ["DepthDetector"]
+__all__ = ["DepthNormalDetector"]

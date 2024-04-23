@@ -6,7 +6,8 @@ import {
     NumberInputView,
     CheckboxInputView,
     RepeatableInputView,
-    TextInputView
+    TextInputView,
+    SelectInputView
 } from "../input.mjs";
 
 const E = new ElementBuilder();
@@ -170,6 +171,33 @@ class CaptionUpsampleFormView extends FormView {
      * @var object The field sets
      */
     static fieldSets = {
+        "Format": {
+            "prompt_format": {
+                "class": SelectInputView,
+                "config": {
+                    "options": {
+                        "sd": "Stable Diffusion",
+                        "dalle3": "DALL-E",
+                        "danbooru": "Danbooru",
+                    },
+                    "value": "sd"
+                }
+            }
+        },
+        "Model": {
+            "model": {
+                "class": SelectInputView,
+                "config": {
+                    "options": {
+                        "zephyr": "Zephyr",
+                        "gemma": "Gemma",
+                        "luxia": "Luxia",
+                        "smaug": "Smaug"
+                    },
+                    "value": "zephyr"
+                }
+            }
+        },
         "Prompts": {
             "prompts": {
                 "class": CaptionInputView
@@ -185,6 +213,13 @@ class CaptionUpsampleFormView extends FormView {
                  }
              }
          }
+    };
+
+    /**
+     * Disable model selection when using DTG
+     */
+    static fieldSetConditions = {
+        "Model": (values) => values.format !== "danbooru"
     };
 
     /**

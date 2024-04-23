@@ -1,7 +1,7 @@
 /** @module forms/base */
 import { View } from '../view/base.mjs';
 import { ElementBuilder } from '../base/builder.mjs';
-import { isEmpty, kebabCase, set } from '../base/helpers.mjs';
+import { isEmpty, kebabCase, deepClone, set } from '../base/helpers.mjs';
 
 const E = new ElementBuilder();
 
@@ -80,6 +80,19 @@ class FormView extends View {
         this.disabled = false;
         this.canceled = false;
         this.dynamicFieldSets = {};
+    }
+
+    /**
+     * Sets a single value.
+     *
+     * @param string $fieldName The field to set.
+     * @param mixed $value The value to set.
+     */
+    async setValue(fieldName, value, performAutoSubmit = true) {
+        let values = deepClone(this.values);
+        values[fieldName] = value;
+        await this.setValues(values, performAutoSubmit);
+        return this;
     }
 
     /**

@@ -128,7 +128,8 @@ class TweaksController extends Controller {
                 "noiseBlendMethod": "inject",
                 "betaStart": null,
                 "betaEnd": null,
-                "betaSchedule": null
+                "betaSchedule": null,
+                "textEncoder": "CLIP",
             }
         }
     }
@@ -145,6 +146,9 @@ class TweaksController extends Controller {
         }
         this.tweaksForm.onSubmit(async (values) => {
             this.engine.guidanceScale = values.guidanceScale;
+            this.engine.guidanceRescale = values.guidanceRescale;
+            this.engine.perturbedGuidanceScale = values.perturbedGuidanceScale;
+            this.engine.perturbedAdaptiveGuidanceScale = values.perturbedAdaptiveGuidanceScale;
             this.engine.inferenceSteps = values.inferenceSteps;
             this.engine.scheduler = values.scheduler;
             this.engine.clipSkip = values.clipSkip;
@@ -157,6 +161,7 @@ class TweaksController extends Controller {
             this.engine.betaStart = values.betaStart;
             this.engine.betaEnd = values.betaEnd;
             this.engine.betaSchedule = values.betaSchedule;
+            this.engine.textEncoder = values.textEncoder;
 
             if (values.enableFreeU) {
                 this.engine.freeUFactors = [
@@ -175,7 +180,7 @@ class TweaksController extends Controller {
             if (!isEmpty(newModel)) {
                 let defaultConfig = newModel.defaultConfiguration,
                     tweaksConfig = {};
-                
+
                 if (!isEmpty(defaultConfig.guidance_scale)) {
                     tweaksConfig.guidanceScale = defaultConfig.guidance_scale;
                 }

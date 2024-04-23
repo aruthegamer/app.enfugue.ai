@@ -656,7 +656,7 @@ class EnfugueAnimateStableDiffusionPipeline(EnfugueStableDiffusionPipeline):
                     break # type: ignore[unreachable]
 
             if curr_layer is None:
-                logger.warning(f"Couldn't find layer to load LoRA state key {key}, skipping.") # type: ignore[unreachable]
+                logger.warning(f"Couldn't find layer to load LoRA state key {key} (transformed to {model_key}), skipping.") # type: ignore[unreachable]
                 continue
 
             weight_down = state_dict[key].to(dtype)

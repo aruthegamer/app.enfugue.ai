@@ -41,7 +41,7 @@ class LanguageSupportModelImageProcessor:
     """
     DEFAULT_DESCRIBE_PROMPT = "You are shown an image. Describe the entirety of the image in signficant detail, including all objects and subjects in frame and their visual characteristics."
 
-    DEFAULT_DESCRIBE_COLLAGE_PROMPT = "You are shown an image in two sections: on the left is the entire image with a black square over a section of the image, and on the right is a close-up of the section of the image that was masked. Please describe the contents of the isolated section of the image in as detailed a manner as possible. You should use the context of the larger image to understand what you are seeing in the section, but do not describe parts of the image that are not visible at least partially within the section."
+    DEFAULT_DESCRIBE_COLLAGE_PROMPT = "You are shown an image in two sections: on the left is the entire image with a red square around a section of the image, and on the right is a close-up of the section of the image that was masked. Please describe the contents of the isolated section of the image in as detailed a manner as possible. You should use the context of the larger image to understand what you are seeing in the section, but do not describe parts of the image that are not visible at least partially within the section."
 
     def __init__(
         self,
@@ -70,19 +70,41 @@ class LanguageSupportModelImageProcessor:
             "this",
             "image",
             "picture",
+            "photo",
+            "photograph",
             "features",
             "shows",
             "contains",
             "pictures",
+            "depicts",
             "consists",
+            "includes",
+            "portrays",
+            "illustrates",
+            "represents",
+            "displays",
+            "exhibits",
             "of",
             "is",
+            "appears",
+            "to",
+            "show",
+            "be",
+            "portray",
+            "depict",
+            "illustrate",
+            "represent",
+            "display",
+            "exhibit",
         ]
+        logger.debug(f"Trimming caption: {caption}")
         for section in trim_section_waterfall:
             section_len = len(section)
             if caption[:section_len].lower() == section:
                 caption = caption[section_len+1:]
-        return caption[0].upper() + caption[1:]
+        caption = caption[0].upper() + caption[1:]
+        logger.debug(f"Trimmed caption: {caption}")
+        return caption
 
     @timed_fn()
     def get_image_caption(
@@ -94,9 +116,9 @@ class LanguageSupportModelImageProcessor:
         tile_size: Optional[int]=None,
         tile_stride: Optional[int]=None,
         describe_prompt: Optional[str]=None,
-        max_new_tokens: int=512,
+        max_new_tokens: int=256,
         use_tile_collage: bool=True,
-        context: Optional[str]=None,
+        description: Optional[str]=None,
         progress_callback: Optional[Callable[[int, int, float], None]]=None,
     ) -> Union[str, List[str]]:
         """
@@ -137,26 +159,31 @@ class LanguageSupportModelImageProcessor:
                     width, height = image.size
                     image_scale = 1 / (height / tile_size)
                     width = int(width * image_scale)
-
                     scaled_tile_size = int(image_scale * tile_size)
-                    scaled_tile = Image.new("RGB", (scaled_tile_size, scaled_tile_size), (255, 255, 255))
-                    scaled_tile.paste(Image.new("RGB", (scaled_tile_size - 4, scaled_tile_size - 4)), (2, 2))
+                    # Red image
+                    scaled_tile = Image.new("RGB", (scaled_tile_size, scaled_tile_size), (255, 0, 0))
+                    # paste tile with 2px border
+                    scaled_tile.paste(tile.resize((scaled_tile_size - 4, scaled_tile_size - 4)), (2, 2))
                     x0, y0, x1, y1 = tile.coordinates
                     x0 = int(x0 * image_scale)
                     y0 = int(y0 * image_scale)
+                    # overall collage
                     collage = Image.new("RGB", (width + tile_size + 5, tile_size))
+                    # Image goes on left
                     collage.paste(image.resize((width, tile_size)))
+                    # Scaled-down tile covers section on left
                     collage.paste(scaled_tile, (x0, y0))
+                    # Full tile goes on right
                     collage.paste(tile, (width + 5, 0))
-
+                    collage.save("./collage.png")
                     if describe_prompt is None:
                         describe_prompt = self.DEFAULT_DESCRIBE_COLLAGE_PROMPT
                 else:
                     if describe_prompt is None:
                         describe_prompt = self.DEFAULT_DESCRIBE_PROMPT
 
-                if context is not None:
-                    describe = f"{describe_prompt}. For additional context, {context}."
+                if description is not None:
+                    describe = f"{describe_prompt}. A human has provided the following description of the entire image, use this to inform your answer: '{description}'"
                 else:
                     describe = describe_prompt
 
@@ -173,10 +200,16 @@ class LanguageSupportModelImageProcessor:
                 logger.debug(f"Captioned tile {i}: {captions[-1]}")
             return captions
         else:
+            describe_prompt = describe_prompt if describe_prompt else self.DEFAULT_DESCRIBE_PROMPT
+            if description is not None:
+                describe = f"{describe_prompt}. A human has provided the following description, use this to inform your answer: '{description}'"
+            else:
+                describe = describe_prompt
+
             return self.trim_caption(
                 self(
                     image,
-                    describe_prompt if describe_prompt else self.DEFAULT_DESCRIBE_PROMPT,
+                    describe,
                     max_new_tokens=max_new_tokens
                 )
             )
@@ -198,12 +231,14 @@ class LanguageSupportModelImageProcessor:
             image = Image.open(image)
 
         prompt = self.prompt_format.format(prompt=prompt)
+        logger.debug(f"Asking formatted prompt: {prompt}")
         if self.use_pipeline:
             output = self.pipeline(
                 image,
                 prompt=prompt,
                 generate_kwargs={"max_new_tokens": max_new_tokens}
             )
+            logger.debug(f"Raw output: {output}")
             output = output[0]["generated_text"][len(prompt)+2:]
         else:
             inputs = self.pipeline.image_processor(prompt, image, return_tensors="pt")
@@ -211,6 +246,7 @@ class LanguageSupportModelImageProcessor:
             empty_cache()
             output = self.pipeline.model.generate(**inputs, max_new_tokens=max_new_tokens)
             output = self.pipeline.image_processor.decode(output[0], skip_special_tokens=True)
+            logger.debug(f"Raw output: {output}")
             output = output[len(prompt) - 5:]
         return output.strip()
 
@@ -769,7 +805,7 @@ class LanguageSupportModel(SupportModel):
         )
 
     @timed_fn()
-    def get_smaug_pipeline(self) -> Pipeline:
+    def get_smaug_pipeline(self, use_llama_cpp: bool=True) -> Pipeline:
         """
         Gets the smaug text generation pipeline.
         """
@@ -810,7 +846,7 @@ class LanguageSupportModel(SupportModel):
         )
 
     @timed_fn()
-    def get_luxia_pipeline(self) -> Pipeline:
+    def get_luxia_pipeline(self, use_llama_cpp: bool=True) -> Pipeline:
         """
         Gets the luxia text generation pipeline.
         """
@@ -907,7 +943,7 @@ class LanguageSupportModel(SupportModel):
         )
 
     @timed_fn()
-    def get_gemma_pipeline(self) -> Pipeline:
+    def get_gemma_pipeline(self, use_llama_cpp: bool=True) -> Pipeline:
         """
         Gets the gemma text generation pipeline.
         """

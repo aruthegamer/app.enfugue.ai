@@ -46,12 +46,20 @@ class Video:
         else:
             self.audio = None
 
+    @property
+    def frames_as_list(self) -> List[Image]:
+        """
+        Returns the frames as a list
+        """
+        return [frame for frame in self.frames]
+
     def save(
         self,
         path: str,
         overwrite: bool=False,
         rate: Optional[float]=None,
         audio_rate: Optional[int]=None,
+        crf: Optional[int]=18,
     ) -> int:
         """
         Saves PIL image frames to a video.
@@ -93,21 +101,30 @@ class Video:
                 remove_audio_file = False
 
                 if self.audio is not None:
+                    audio_file = os.path.join(tempfile.mkdtemp(), "audio.mp3")
+                    maximum_seconds = len(clip_frames)/rate
                     if isinstance(self.audio, str):
-                        audio_file = self.audio
-                        if not audio_file.endswith(".mp3"):
-                            new_audio_file = os.path.join(tempfile.mkdtemp(), "audio.mp3")
-                            Audio.from_file(audio_file).save(new_audio_file, rate=audio_rate)
-                            audio_file = new_audio_file
-                            remove_audio_file = True
+                        Audio.from_file(self.audio).save(
+                            audio_file,
+                            rate=audio_rate,
+                            maximum_seconds=maximum_seconds,
+                        )
                     else:
-                        audio_file = os.path.join(tempfile.mkdtemp(), "audio.mp3")
-                        self.audio.save(audio_file, rate=audio_rate)
-                        remove_audio_file = True
+                        self.audio.save(
+                            audio_file,
+                            rate=audio_rate,
+                            maximum_seconds=maximum_seconds
+                        )
                 else:
                     audio_file = None
 
-                ffmpeg_write_video(clip, path, rate, audiofile=audio_file, ffmpeg_params=["-crf", "8"])
+                ffmpeg_write_video(
+                    clip,
+                    path,
+                    rate,
+                    audiofile=audio_file,
+                    ffmpeg_params=[] if crf is None else ["-crf", str(crf)]
+                )
 
                 if not os.path.exists(path):
                     raise IOError(f"Nothing was written to {path}")
@@ -226,7 +243,19 @@ class Video:
         """
         Uses Video.frames_from_file and instantiates a Video object.
         """
-        return cls(
+        video = None
+
+        def set_rate_on_open(clip: VideoFileClip) -> None:
+            nonlocal video
+            video.frame_rate = clip.fps
+            if clip.audio is not None:
+                from enfugue.diffusion.util.audio_util.helper import Audio
+                video.audio_rate = clip.audio.fps
+                video.audio = Audio(frames=clip.audio.iter_frames(), rate=clip.audio.fps)
+            if on_open is not None:
+                on_open(clip)
+
+        video = cls(
             frames=cls.file_to_frames(
                 path=path,
                 skip_frames=skip_frames,
@@ -236,9 +265,10 @@ class Video:
                 height=height,
                 fit=fit,
                 anchor=anchor,
-                on_open=on_open,
+                on_open=set_rate_on_open,
             )
         )
+        return video
 
     def dense_flow(
         self,

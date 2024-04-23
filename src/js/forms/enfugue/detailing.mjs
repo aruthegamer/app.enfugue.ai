@@ -38,6 +38,17 @@ class DetailingFormView extends FormView {
                     "tooltip": "When enabled, hands will be identified in the image and inpainted using the current model. This can help with poorly formed human hands, but is not guaranteed."
                 }
             },
+            "detailUpscale": {
+                "label": "Detail Upscale",
+                "class": NumberInputView,
+                "config": {
+                    "min": 0.0,
+                    "max": 16.0,
+                    "value": 0.5,
+                    "step": 0.1,
+                    "tooltip": "Upscale this amount prior to executing the detailer."
+                }
+            },
             "inpaintStrength": {
                 "label": "Inpaint Denoising Strength",
                 "class": SliderPreciseInputView,
@@ -80,7 +91,7 @@ class DetailingFormView extends FormView {
                 "config": {
                     "min": 0,
                     "step": 1,
-                    "tooltipo": "The number of inference steps to use when detailing. When blank, the number of inference steps of the initial execution will be used."
+                    "tooltip": "The number of inference steps to use when detailing. When blank, the number of inference steps of the initial execution will be used."
                 }
             }
         }

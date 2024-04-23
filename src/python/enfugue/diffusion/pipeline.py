@@ -47,11 +47,15 @@ from transformers import (
     CLIPTextModelWithProjection,
     CLIPTokenizer,
     CLIPVisionModelWithProjection,
+    T5Tokenizer,
+    T5EncoderModel,
 )
 from diffusers.schedulers import (
     KarrasDiffusionSchedulers,
     DDPMWuerstchenScheduler,
     DDIMScheduler,
+    DDPMScheduler,
+    LCMScheduler,
     DPMSolverMultistepScheduler,
     EulerAncestralDiscreteScheduler,
     EulerDiscreteScheduler,
@@ -95,8 +99,8 @@ from diffusers.image_processor import VaeImageProcessor
 
 from pibble.util.files import load_json
 
-from enfugue.diffusion.animate.diff.sparse_controlnet import SparseControlNetModel # type: ignore[attr-defined]
 from enfugue.diffusion.constants import *
+from enfugue.diffusion.animate.diff.sparse_controlnet import SparseControlNetModel # type: ignore[attr-defined]
 from enfugue.diffusion.cascade import (
     StableCascadeUNet,
     convert_stable_cascade_unet_state_dict
@@ -127,6 +131,7 @@ from enfugue.diffusion.util import (
 
 if TYPE_CHECKING:
     from enfugue.diffusers.support.ip import IPAdapter
+    from enfugue.diffusers.support.ella import ELLA
 
 # This is ~64k×64k. Absurd, but I don't judge
 PIL.Image.MAX_IMAGE_PIXELS = 2**32
@@ -196,6 +201,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
     frame_window_stride: Optional[int]
     tiling_stride: Optional[int]
     tiling_mask_type: MASK_TYPE_LITERAL
+    flexible_lengths: Optional[List[int]]=None
     frequencies_filter_type: Literal["gaussian", "ideal", "box", "butterworth"] = "butterworth"
     frequencies_filter_order = 4
     frequencies_filter_stop_spatial = 0.25
@@ -205,9 +211,9 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         self,
         vae: Union[AutoencoderKL, ConsistencyDecoderVAE, PaellaVQModel],
         vae_preview: Optional[AutoencoderTiny],
-        text_encoder: Optional[Union[CLIPTextModel, CLIPTextModelWithProjection]],
+        text_encoder: Optional[Union[CLIPTextModel, CLIPTextModelWithProjection, T5EncoderModel]],
         text_encoder_2: Optional[CLIPTextModelWithProjection],
-        tokenizer: Optional[CLIPTokenizer],
+        tokenizer: Optional[Union[CLIPTokenizer, T5Tokenizer]],
         tokenizer_2: Optional[CLIPTokenizer],
         unet: Union[UNet2DConditionModel, StableCascadeUNet],
         scheduler: KarrasDiffusionSchedulers,
@@ -221,6 +227,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         requires_aesthetic_score: bool=False,
         force_full_precision_vae: bool=False,
         ip_adapter: Optional[IPAdapter]=None,
+        ella: Optional[ELLA]=None,
         engine_size: int=512,
         prior_latent_scale: float=42.67,
         decoder_latent_scale: float=4.0,
@@ -286,6 +293,9 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         # Add IP Adapter
         self.ip_adapter = ip_adapter
         self.ip_adapter_loaded = False
+
+        # Add ELLA
+        self.ella = ella
 
         # Create helpers
         self.latent_scaler = LatentScaler(
@@ -361,6 +371,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         position_encoding_scale_length: Optional[int]=None,
         use_lora_compatible_layers: bool=True,
         device: Optional[Union[str, torch.Device]]=None,
+        text_encoder_model: Optional[TEXT_ENCODER_LITERAL]=None,
         **kwargs: Any,
     ) -> EnfugueStableDiffusionPipeline:
         """
@@ -463,6 +474,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                 position_encoding_truncate_length=position_encoding_truncate_length,
                 position_encoding_scale_length=position_encoding_scale_length,
                 use_lora_compatible_layers=use_lora_compatible_layers,
+                text_encoder_model=text_encoder_model,
                 **kwargs
             )
 
@@ -637,6 +649,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         position_encoding_scale_length: Optional[int]=None,
         use_lora_compatible_layers: bool=True,
         device: Optional[Union[str, torch.Device]]=None,
+        text_encoder_model: Optional[TEXT_ENCODER_LITERAL]=None,
         **kwargs: Any,
     ) -> EnfugueStableDiffusionPipeline:
         """
@@ -909,17 +922,30 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
             )
         elif model_type == "FrozenCLIPEmbedder":
             # SD V1
-            tokenizer_path = "openai/clip-vit-large-patch14"
+            if text_encoder_model == "T5-L":
+                tokenizer_path = "t5-large"
+                tokenizer_cls = T5Tokenizer
+            elif text_encoder_model == "T5-XL":
+                tokenizer_path = "google/flan-t5-xl"
+                tokenizer_cls = T5Tokenizer
+            else:
+                tokenizer_path = "openai/clip-vit-large-patch14"
+                tokenizer_cls = CLIPTokenizer
 
             task_callback(f"Loading tokenizer {tokenizer_path}")
 
-            tokenizer = CLIPTokenizer.from_pretrained(
+            tokenizer = tokenizer_cls.from_pretrained(
                 tokenizer_path,
                 cache_dir=cache_dir
             )
-
-            text_model = convert_ldm_clip_checkpoint(checkpoint)
-
+            
+            if tokenizer_cls is CLIPTokenizer:
+                text_model = convert_ldm_clip_checkpoint(checkpoint)
+            else:
+                text_model = T5EncoderModel.from_pretrained(
+                    tokenizer_path,
+                    cache_dir=cache_dir
+                )
             kwargs["text_encoder_2"] = None
             kwargs["tokenizer_2"] = None
             pipe = cls(
@@ -1038,6 +1064,13 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         return pipe
 
     @property
+    def ella_is_loaded(self) -> bool:
+        """
+        Returns true if ELLA is loaded
+        """
+        return self.ella is not None and isinstance(self.tokenizer, T5Tokenizer) and isinstance(self.text_encoder, T5EncoderModel)
+
+    @property
     def is_sdxl(self) -> bool:
         """
         Returns true if this is using SDXL (base or refiner)
@@ -1084,6 +1117,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         """
         Returns true if this is stable cascade.
         """
+        return False
         return self.unet_2 is not None
 
     def get_sparse_controlnet_config(self, use_simplified_condition_embedding: bool) -> Dict[str, Any]:
@@ -1232,6 +1266,8 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
             except AttributeError:
                 raise RuntimeError("Couldn't set motion attention scale - was this pipeline initialized with the right UNet?")
         self.unet.to(device=device, dtype=dtype)
+        if self.ella is not None:
+            self.ella.to(device=device, dtype=dtype)
 
     def run_safety_checker(
         self,
@@ -1295,6 +1331,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         device: torch.device,
         num_results_per_prompt: int = 1,
         do_classifier_free_guidance: bool = False,
+        do_adversarial_guidance: bool = False,
         negative_prompt: Optional[str] = None,
         prompt_embeds: Optional[torch.Tensor] = None,
         pooled_prompt_embeds: Optional[torch.Tensor] = None,
@@ -1359,30 +1396,42 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                 if tokenizer is None or text_encoder is None:
                     continue
                 text_encoder.to(device, dtype=dtype)
-                if self.is_sdxl or self.is_stable_cascade:
-                    return_type = ReturnedEmbeddingsType.PENULTIMATE_HIDDEN_STATES_NON_NORMALIZED
-                elif clip_skip:
-                    return_type = ReturnedEmbeddingsType.PENULTIMATE_HIDDEN_STATES_NORMALIZED
+                if isinstance(text_encoder, T5EncoderModel):
+                    text_inputs = tokenizer(
+                        prompt,
+                        return_tensors="pt",
+                        add_special_tokens=True,
+                    )
+                    prompt_embeds = text_encoder(
+                        text_inputs.input_ids.to(device),
+                        text_inputs.attention_mask.to(device)
+                    ).last_hidden_state
+                    self.flexible_lengths = [prompt_embeds.size(1)] * num_results_per_prompt
                 else:
-                    return_type = ReturnedEmbeddingsType.LAST_HIDDEN_STATES_NORMALIZED
+                    if self.is_sdxl or self.is_stable_cascade:
+                        return_type = ReturnedEmbeddingsType.PENULTIMATE_HIDDEN_STATES_NON_NORMALIZED
+                    elif clip_skip:
+                        return_type = ReturnedEmbeddingsType.PENULTIMATE_HIDDEN_STATES_NORMALIZED
+                    else:
+                        return_type = ReturnedEmbeddingsType.LAST_HIDDEN_STATES_NORMALIZED
 
-                compel = PromptEncoder(
-                    text_encoder=text_encoder,
-                    tokenizer=tokenizer,
-                    returned_embeddings_type=return_type,
-                    requires_pooled=self.is_sdxl or self.is_stable_cascade
-                )
-                compel.clip_skip = 0 if not clip_skip else clip_skip
+                    compel = PromptEncoder(
+                        text_encoder=text_encoder,
+                        tokenizer=tokenizer,
+                        returned_embeddings_type=return_type,
+                        requires_pooled=self.is_sdxl or self.is_stable_cascade
+                    )
+                    compel.clip_skip = 0 if not clip_skip else clip_skip
 
-                if self.is_sdxl or self.is_stable_cascade:
-                    prompt_embeds, pooled_prompt_embeds = compel([prompt])
-                else:
-                    prompt_embeds = compel([prompt])
+                    if self.is_sdxl or self.is_stable_cascade:
+                        prompt_embeds, pooled_prompt_embeds = compel([prompt])
+                    else:
+                        prompt_embeds = compel([prompt])
 
-                bs_embed, seq_len, _ = prompt_embeds.shape  # type: ignore
-                # duplicate text embeddings for each generation per prompt, using mps friendly method
-                prompt_embeds = prompt_embeds.repeat(1, num_results_per_prompt, 1)  # type: ignore
-                prompt_embeds = prompt_embeds.view(bs_embed * num_results_per_prompt, seq_len, -1)
+                    bs_embed, seq_len, _ = prompt_embeds.shape  # type: ignore
+                    # duplicate text embeddings for each generation per prompt, using mps friendly method
+                    prompt_embeds = prompt_embeds.repeat(1, num_results_per_prompt, 1)  # type: ignore
+                    prompt_embeds = prompt_embeds.view(bs_embed * num_results_per_prompt, seq_len, -1)
 
                 if self.is_sdxl or self.is_stable_cascade:
                     prompt_embeds_list.append(prompt_embeds)
@@ -1402,18 +1451,41 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                 if tokenizer is None or text_encoder is None:
                     continue
 
-                compel = PromptEncoder(
-                    text_encoder=text_encoder,
-                    tokenizer=tokenizer,
-                    returned_embeddings_type=return_type,
-                    requires_pooled=self.is_sdxl or self.is_stable_cascade
-                )
-                compel.clip_skip = 0 if not clip_skip else clip_skip
-
-                if self.is_sdxl or self.is_stable_cascade:
-                    negative_prompt_embeds, negative_pooled_prompt_embeds = compel([negative_prompt or ""])
+                if isinstance(text_encoder, T5EncoderModel):
+                    negative_text_inputs = tokenizer(
+                        negative_prompt or "",
+                        return_tensors="pt",
+                        add_special_tokens=True,
+                    )
+                    negative_prompt_embeds = text_encoder(
+                        negative_text_inputs.input_ids.to(device),
+                        negative_text_inputs.attention_mask.to(device)
+                    ).last_hidden_state
+                    self.flexible_lengths = [negative_prompt_embeds.size(1)] * num_results_per_prompt + [prompt_embeds.size(1)] * num_results_per_prompt
+                    # Pad positive and negative to same length
+                    max_length = max([prompt_embeds.size(1), negative_prompt_embeds.size(1)])
+                    b, _, d = prompt_embeds.shape
+                    prompt_embeds = torch.cat([
+                        prompt_embeds,
+                        torch.zeros((b, max_length-prompt_embeds.size(1), d), device=device, dtype=text_encoder.dtype),
+                    ], dim=1)
+                    negative_prompt_embeds = torch.cat([
+                        negative_prompt_embeds,
+                        torch.zeros((b, max_length-negative_prompt_embeds.size(1), d), device=device, dtype=text_encoder.dtype),
+                    ], dim=1)
                 else:
-                    negative_prompt_embeds = compel([negative_prompt or ""])
+                    compel = PromptEncoder(
+                        text_encoder=text_encoder,
+                        tokenizer=tokenizer,
+                        returned_embeddings_type=return_type,
+                        requires_pooled=self.is_sdxl or self.is_stable_cascade
+                    )
+                    compel.clip_skip = 0 if not clip_skip else clip_skip
+
+                    if self.is_sdxl or self.is_stable_cascade:
+                        negative_prompt_embeds, negative_pooled_prompt_embeds = compel([negative_prompt or ""])
+                    else:
+                        negative_prompt_embeds = compel([negative_prompt or ""])
 
                 if do_classifier_free_guidance:
                     # duplicate unconditional embeddings for each generation per prompt, using mps friendly method
@@ -1428,13 +1500,20 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                     # Here we concatenate the unconditional and text embeddings into a single batch
                     # to avoid doing two forward passes
                     if not self.is_sdxl and not self.is_stable_cascade:
-                        prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])  # type: ignore
+                        if do_adversarial_guidance:
+                            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds, prompt_embeds])  # type: ignore
+                        else:
+                            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])  # type: ignore
+                elif do_adversarial_guidance and not self.is_sdxl and not self.is_stable_cascade:
+                    prompt_embeds = torch.cat([prompt_embeds, prompt_embeds])
                 if self.is_sdxl or self.is_stable_cascade:
                     negative_prompt_embeds_list.append(negative_prompt_embeds)
             if self.is_sdxl or self.is_stable_cascade:
                 negative_prompt_embeds = torch.concat(negative_prompt_embeds_list, dim=-1)
         elif do_classifier_free_guidance and negative_prompt_embeds is not None and not self.is_sdxl and not self.is_stable_cascade:
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])
+        elif do_adversarial_guidance and not self.is_sdxl and not self.is_stable_cascade:
+            prompt_embeds = torch.cat([prompt_embeds, prompt_embeds])
 
         if self.is_sdxl or self.is_stable_cascade:
             pooled_prompt_embeds = pooled_prompt_embeds.repeat(1, num_results_per_prompt).view(
@@ -1454,13 +1533,15 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         animation_frames: Optional[int],
         device: Union[str, torch.device],
         ip_adapter_scale: Optional[Union[List[float], float]] = None,
-        step_complete: Optional[Callable[[bool], None]] = None
+        step_complete: Optional[Callable[[bool], None]] = None,
+        guidance_rescale: Optional[float] = 0.0,
     ) -> Iterator[None]:
         """
         Builds the runtime context, which ensures everything is on the right devices
         """
         if isinstance(device, str):
             device = torch.device(device)
+
         if ip_adapter_scale is not None:
             self.ip_adapter.set_scale( # type: ignore[union-attr]
                 unet=self.unet,
@@ -1470,6 +1551,18 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
             self.text_encoder.to(device)
         if getattr(self, "text_encoder_2", None) is not None:
             self.text_encoder_2.to(device)
+
+        # Also ensure guidance rescale/zero SNR is set
+        if guidance_rescale is not None and guidance_rescale > 0.0:
+            if hasattr(self.scheduler, "_zero_snr_betas"):
+                self.scheduler.betas = self.scheduler._zero_snr_betas # type: ignore[attr-defined]
+            else:
+                self.scheduler._original_betas = self.scheduler.betas
+                self.scheduler._zero_snr_betas = self.rescale_zero_terminal_snr(self.scheduler.betas)
+                self.scheduler.betas = self.scheduler._zero_snr_betas # type: ignore[attr-defined]
+        else:
+            if hasattr(self.scheduler, "_original_betas"):
+                self.scheduler.betas = self.scheduler._original_betas # type: ignore[attr-defined]
 
         if device.type == "cpu":
             with torch.autocast("cpu"):
@@ -1527,7 +1620,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                 message = "Are you trying to use a Stable Diffusion XL LoRA with this Stable Diffusion 1.5 pipeline?"
             raise IOError(f"Received {type(ex).__name__} loading LoRA. {message}")
 
-    def load_sdxl_lora_weights(
+    def load_model_lora_weights(
         self, 
         pretrained_model_name_or_path_or_dict: Union[str, Dict[str, torch.Tensor]],
         multiplier: float = 1.0,
@@ -1547,42 +1640,43 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
             unet=self.unet,
             _pipeline=self,
         )
+        if self.text_encoder is not None and not isinstance(self.text_encoder, T5EncoderModel):
+            text_encoder_state_dict = dict([
+                (k, v)
+                for k, v in state_dict.items()
+                if "text_encoder." in k
+            ])
+            text_encoder_keys = len(text_encoder_state_dict)
 
-        text_encoder_state_dict = dict([
-            (k, v)
-            for k, v in state_dict.items()
-            if "text_encoder." in k
-        ])
-        text_encoder_keys = len(text_encoder_state_dict)
+            if text_encoder_keys > 0:
+                logger.debug(f"Loading {text_encoder_keys} keys into primary text encoder with multiplier {multiplier}")
+                self.load_lora_into_text_encoder( # type: ignore[attr-defined]
+                    text_encoder_state_dict,
+                    network_alphas=network_alphas,
+                    text_encoder=self.text_encoder,
+                    prefix="text_encoder",
+                    lora_scale=multiplier,
+                    _pipeline=self,
+                )
 
-        if text_encoder_keys > 0:
-            logger.debug(f"Loading {text_encoder_keys} keys into primary text encoder with multiplier {multiplier}")
-            self.load_lora_into_text_encoder( # type: ignore[attr-defined]
-                text_encoder_state_dict,
-                network_alphas=network_alphas,
-                text_encoder=self.text_encoder,
-                prefix="text_encoder",
-                lora_scale=multiplier,
-                _pipeline=self,
-            )
+        if self.text_encoder_2 is not None:
+            text_encoder_2_state_dict = dict([
+                (k, v)
+                for k, v in state_dict.items()
+                if "text_encoder_2." in k
+            ])
+            text_encoder_2_keys = len(text_encoder_2_state_dict)
 
-        text_encoder_2_state_dict = dict([
-            (k, v)
-            for k, v in state_dict.items()
-            if "text_encoder_2." in k
-        ])
-        text_encoder_2_keys = len(text_encoder_2_state_dict)
-
-        if text_encoder_2_keys > 0:
-            logger.debug(f"Loading {text_encoder_2_keys} keys into secondary text encoder with multiplier {multiplier}")
-            self.load_lora_into_text_encoder( # type: ignore[attr-defined]
-                text_encoder_2_state_dict,
-                network_alphas=network_alphas,
-                text_encoder=self.text_encoder_2,
-                prefix="text_encoder_2",
-                lora_scale=multiplier,
-                _pipeline=self,
-            )
+            if text_encoder_2_keys > 0:
+                logger.debug(f"Loading {text_encoder_2_keys} keys into secondary text encoder with multiplier {multiplier}")
+                self.load_lora_into_text_encoder( # type: ignore[attr-defined]
+                    text_encoder_2_state_dict,
+                    network_alphas=network_alphas,
+                    text_encoder=self.text_encoder_2,
+                    prefix="text_encoder_2",
+                    lora_scale=multiplier,
+                    _pipeline=self,
+                )
 
     def load_motion_lora_weights(
         self,
@@ -1619,13 +1713,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                 multiplier=multiplier,
                 dtype=dtype
             )
-        if self.is_sdxl:
-            return self.load_sdxl_lora_weights(
-                state_dict, # type: ignore[arg-type]
-                multiplier=multiplier,
-                dtype=dtype
-            )
-        return super(EnfugueStableDiffusionPipeline, self).load_lora_weights( # type: ignore[misc]
+        return self.load_model_lora_weights( # type: ignore[misc]
             state_dict,
             multiplier=multiplier,
             dtype=dtype
@@ -1636,6 +1724,9 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         Loads textual inversion
         Temporary implementation from https://github.com/huggingface/diffusers/issues/4405
         """
+        if self.tokenizer is not None and isinstance(self.tokenizer, T5Tokenizer):
+            logger.debug(f"Ignoring textual inversion {inversion_path}, using LLM adapter")
+            return
         try:
             if not self.is_sdxl:
                 return super(EnfugueStableDiffusionPipeline, self).load_textual_inversion(inversion_path, **kwargs) # type: ignore[misc]
@@ -2026,7 +2117,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         if animation_frames:
             # Change from collapsing on batch dim to temporal dim
             latents = rearrange(latents, 't c h w -> c t h w').unsqueeze(0)
-        
+
         if batch_size > latents.shape[0] and batch_size % latents.shape[0] == 0:
             # duplicate images to match batch size
             additional_image_per_prompt = batch_size // latents.shape[0]
@@ -2052,18 +2143,17 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                 device=torch.device(device) if isinstance(device, str) else device,
                 dtype=dtype
             )
-            if animation_frames and self.frame_window_size and self.frame_window_stride:
+            if animation_frames and self.frame_window_size:
                 # FreeNoise
-                for i in range(self.frame_window_size, animation_frames, self.frame_window_stride):
-                    indexes_start = i - self.frame_window_size
-                    indexes_end = i + self.frame_window_stride - self.frame_window_size
+                for i in range(0, animation_frames // self.frame_window_size):
+                    indexes_start = i * self.frame_window_size
+                    indexes_end = min(animation_frames - 1, (i + 1) * self.frame_window_size)
                     indexes = torch.randperm(
                         indexes_end-indexes_start,
                         generator=generator,
                         device=torch.device(device) if isinstance(device, str) else device,
                     )
-                    indexes += indexes_start
-                    noise[:, :, i:i+self.frame_window_stride] = noise[:, :, indexes]
+                    noise[:, :, indexes_start:indexes_end] = noise[:, :, indexes]
             return self.scheduler.add_noise(latents, noise, timestep) # type: ignore[attr-defined]
         else:
             return latents
@@ -2081,6 +2171,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         weight_builder: MaskWeightBuilder,
         generator: Optional[torch.Generator] = None,
         do_classifier_free_guidance: bool = False,
+        do_adversarial_guidance: bool = False,
         progress_callback: Optional[Callable[[bool], None]] = None,
         animation_frames: Optional[int] = None,
         tiling: bool = False,
@@ -2148,8 +2239,12 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         if animation_frames and latents.shape[2] < animation_frames:
             latents = latents.repeat(1, 1, animation_frames - latents.shape[2], 1, 1)
 
-        mask_latents = torch.cat([mask_latents] * 2) if do_classifier_free_guidance else mask_latents
-        latents = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+        if do_classifier_free_guidance and do_adversarial_guidance:
+            mask_latents = torch.cat([mask_latents] * 3)
+            latents = torch.cat([latents] * 3)
+        elif do_classifier_free_guidance or do_adversarial_guidance:
+            mask_latents = torch.cat([mask_latents] * 2)
+            latents = torch.cat([latents] * 2)
 
         # aligning device to prevent device errors when concating it with the latent model input
         mask_latents = mask_latents.to(device=device, dtype=dtype)
@@ -2256,6 +2351,9 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         ratio: Optional[torch.Tensor] = None,
         image_embeddings: Optional[torch.Tensor] = None,
         is_decoder: bool = False,
+        do_classifier_free_guidance: bool = False,
+        do_adversarial_guidance: bool = False,
+        use_freenoise_windowing: bool = False,
     ) -> torch.Tensor:
         """
         Runs the UNet to predict noise residual.
@@ -2266,14 +2364,6 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
             if clip_text_pooled is not None:
                 clip_text_pooled = clip_text_pooled.unsqueeze(1)
             if is_decoder:
-                from enfugue.diffusion.util import debug_tensors
-                debug_tensors(
-                    x=latents,
-                    r=ratio,
-                    clip_text_pooled=clip_text_pooled,
-                    effnet=image_embeddings,
-                    include_bounds=True
-                )
                 return self.unet_2(
                     x=latents,
                     r=ratio,
@@ -2293,14 +2383,44 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                 kwargs["added_cond_kwargs"] = added_cond_kwargs
             if motion_attention_mask is not None:
                 kwargs["motion_attention_mask"] = motion_attention_mask
-            if len(latents.shape) == 5:
+            if len(latents.shape) == 5 and use_freenoise_windowing:
                 kwargs["frame_window_size"] = self.frame_window_size
                 kwargs["frame_window_stride"] = self.frame_window_stride
+
+            if self.ella is not None:
+                if self.flexible_lengths is not None:
+                    time_aware_encoder_hidden_states = []
+                    for i, max_length in enumerate(self.flexible_lengths):
+                        if len(embeddings.shape) == 4:
+                            time_aware_encoder_hidden_states.append(
+                                torch.cat([
+                                    self.ella(embeddings[i:i+1, j, :max_length], timestep).unsqueeze(1)
+                                    for j in range(embeddings.size(1))
+                                ], dim=1)
+                            )
+                        else:
+                            time_aware_encoder_hidden_states.append(
+                                self.ella(embeddings[i:i+1, :max_length], timestep)
+                            )
+                    encoder_hidden_states = torch.cat(
+                        time_aware_encoder_hidden_states,
+                        dim=0
+                    )
+                    if do_adversarial_guidance:
+                        if do_classifier_free_guidance:
+                            negative_hidden_states, positive_hidden_states = encoder_hidden_states.chunk(2)
+                            encoder_hidden_states = torch.cat([negative_hidden_states, positive_hidden_states, positive_hidden_states])
+                        else:
+                            encoder_hidden_states = torch.cat([encoder_hidden_states, encoder_hidden_states])
+                else:
+                    encoder_hidden_states = self.ella(embeddings, timestep)
+            else:
+                encoder_hidden_states=embeddings
 
             return self.unet(
                 latents,
                 timestep,
-                encoder_hidden_states=embeddings,
+                encoder_hidden_states=encoder_hidden_states,
                 timestep_cond=timestep_cond,
                 cross_attention_kwargs=cross_attention_kwargs,
                 down_block_additional_residuals=down_block_additional_residuals,
@@ -2352,6 +2472,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         if animation_frames:
             # Move what is normally batch (0) to time (2), then insert batch dim back in
             image = rearrange(image, 't c h w -> c t h w').unsqueeze(0) # now b c t h w
+
             if conditioning_frame is not None:
                 # Get condition length
                 image_length = image.shape[2]
@@ -2372,6 +2493,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                     # Set image and mask for cond frames
                     condition[:,:,cond_frame:cond_frame+image_length] = image
                     mask[:,:,cond_frame:cond_frame+image_length] = 1
+
                 # image now becomes the combined condition
                 image = condition
 
@@ -2413,6 +2535,107 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
 
         return image.to(device=device, dtype=dtype)
 
+    def get_adversarial_guidance_layers(
+        self,
+        pag_applied_layers: Optional[List[str]] = None,
+        pag_applied_layers_index: Optional[List[str]] = None,
+    ) -> List[ModelMixin]:
+        """
+        Gets the layers to apply adversarial guidance to.
+        """
+        down_layers = []
+        mid_layers = []
+        up_layers = []
+        applied_layers = []
+
+        for name, module in self.unet.named_modules():
+            if "attn1" in name and "to" not in name:
+                layer_type = name.split(".")[0].split("_")[0]
+                if layer_type == "down":
+                    down_layers.append(module)
+                elif layer_type == "mid":
+                    mid_layers.append(module)
+                elif layer_type == "up":
+                    up_layers.append(module)
+
+        if pag_applied_layers_index:
+            for drop_layer in pag_applied_layers_index:
+                layer_number = int(drop_layer[1:])
+                try:
+                    if drop_layer[0] == 'd':
+                        applied_layers.append(down_layers[layer_number])
+                    elif drop_layer[0] == 'm':
+                        applied_layers.append(mid_layers[layer_number])
+                    elif drop_layer[0] == 'u':
+                        applied_layers.append(up_layers[layer_number])
+                    else:
+                        raise ValueError(f"Invalid layer type: {drop_layer[0]}")
+                except IndexError:
+                    raise ValueError(
+                        f"Invalid layer index: {drop_layer}. Available layers: {len(down_layers)} down layers, {len(mid_layers)} mid layers, {len(up_layers)} up layers."
+                    )
+        elif pag_applied_layers:
+            for drop_full_layer in pag_applied_layers:
+                if drop_full_layer == "down":
+                    for down_layer in down_layers:
+                        applied_layers.append(down_layer)
+                elif drop_full_layer == "mid":
+                    for mid_layer in mid_layers:
+                        applied_layers.append(mid_layer)
+                elif drop_full_layer == "up":
+                    for up_layer in up_layers:
+                        applied_layers.append(up_layer)
+                else:
+                    raise ValueError(f"Invalid layer type: {drop_full_layer}")
+
+        return applied_layers
+
+    def maybe_apply_adversarial_guidance(
+        self,
+        pag_applied_layers: Optional[List[str]]=None,
+        pag_applied_layers_index: Optional[List[str]]=None,
+        do_classifier_free_guidance: bool=False,
+    ) -> None:
+        """
+        Applies adversarial guidance to the specified layers.
+        """
+        from enfugue.diffusion.pag import (
+            PAGIdentitySelfAttnProcessor,
+            PAGIdentitySelfAttnProcessorModule,
+            PAGCFGIdentitySelfAttnProcessor,
+            PAGCFGIdentitySelfAttnProcessorModule,
+        )
+        self.applied_adversarial_guidance_layers = self.get_adversarial_guidance_layers(
+            pag_applied_layers,
+            pag_applied_layers_index
+        )
+        if do_classifier_free_guidance:
+            replace_processor = PAGCFGIdentitySelfAttnProcessor()
+        else:
+            replace_processor = PAGIdentitySelfAttnProcessor()
+
+        for layer in self.applied_adversarial_guidance_layers:
+            layer.replaced_processor = layer.processor
+            if do_classifier_free_guidance:
+                if isinstance(layer.processor, torch.nn.Module):
+                    layer.processor = PAGCFGIdentitySelfAttnProcessorModule()
+                else:
+                    layer.processor = PAGCFGIdentitySelfAttnProcessor()
+            else:
+                if isinstance(layer.processor, torch.nn.Module):
+                    layer.processor = PAGIdentitySelfAttnProcessorModule()
+                else:
+                    layer.processor = PAGIdentitySelfAttnProcessor()
+
+    def maybe_remove_adversarial_guidance(self) -> None:
+        """
+        Removes adversarial guidance from any previously applied layers.
+        """
+        for layer in self.applied_adversarial_guidance_layers:
+            layer.processor = layer.replaced_processor
+            del layer.replaced_processor
+        self.applied_adversarial_guidance_layers = []
+
     def get_controlnet_conditioning_blocks(
         self,
         device: Union[str, torch.device],
@@ -2421,12 +2644,19 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         encoder_hidden_states: torch.Tensor,
         controlnet_conds: Optional[Dict[str, List[Tuple[torch.Tensor, Union[float, torch.Tensor], Optional[torch.Tensor]]]]],
         added_cond_kwargs: Optional[Dict[str, Any]],
+        do_adversarial_guidance: bool = False,
+        do_classifier_free_guidance: bool = False,
     ) -> Tuple[Optional[List[torch.Tensor]], Optional[torch.Tensor]]:
         """
         Executes the controlnet
         """
         if not controlnet_conds or not self.controlnets:
             return None, None
+
+        if do_adversarial_guidance and do_classifier_free_guidance:
+            # Remove duplicate of prompt embeds and latents
+            latents = torch.cat(latents.chunk(3)[:2])
+            encoder_hidden_states = torch.cat(encoder_hidden_states.chunk(3)[:2])
 
         is_animation = len(latents.shape) == 5
         if is_animation:
@@ -2521,6 +2751,14 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                     ]
                     mid_block += mid_sample
 
+        if do_adversarial_guidance and do_classifier_free_guidance:
+            # Add duplicate of forward pass to all blocks
+            def add_duplicate(tensor: torch.Tensor) -> torch.Tensor:
+                negative, positive = tensor.chunk(2)
+                return torch.cat([negative, positive, positive], dim=0)
+            mid_block = add_duplicate(mid_block)
+            down_blocks = [add_duplicate(block) for block in down_blocks]
+
         return down_blocks, mid_block
 
     def denoise_unchunked(
@@ -2535,6 +2773,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         weight_builder: MaskWeightBuilder,
         guidance_scale: float,
         do_classifier_free_guidance: bool = False,
+        do_adversarial_guidance: bool = False,
         timestep_cond: Optional[torch.Tensor] = None,
         mask: Optional[torch.Tensor] = None,
         mask_image: Optional[torch.Tensor] = None,
@@ -2554,6 +2793,10 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         motion_attention_min: float=0.85,
         motion_attention_max: float=1.30,
         is_decoder: bool=False,
+        guidance_rescale: float=0.0,
+        pag_scale: float=0.0,
+        pag_adaptive_scaling: float=0.0,
+        use_freenoise_windowing: bool = False,
     ) -> torch.Tensor:
         """
         Executes the denoising loop without chunking.
@@ -2605,8 +2848,14 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
             # store ratio for later
             denoising_ratio = i / num_steps
 
-            # expand the latents if we are doing classifier free guidance
-            latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+            # expand the latents if we are doing classifier free guidance or adversarial guidance
+            if do_classifier_free_guidance and do_adversarial_guidance:
+                latent_model_input = torch.cat([latents] * 3)
+            elif do_classifier_free_guidance or do_adversarial_guidance:
+                latent_model_input = torch.cat([latents] * 2)
+            else:
+                latent_model_input = latents
+
             latent_model_input = self.scheduler.scale_model_input(latent_model_input, t) # type: ignore[attr-defined]
 
             # Get embeds
@@ -2683,6 +2932,8 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                         encoder_hidden_states=embeds,
                         controlnet_conds=controlnet_conds,
                         added_cond_kwargs=added_cond_kwargs,
+                        do_adversarial_guidance=do_adversarial_guidance,
+                        do_classifier_free_guidance=do_classifier_free_guidance,
                     )
             else:
                 down_block, mid_block = None, None
@@ -2712,12 +2963,39 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                     image
                 ),
                 is_decoder=is_decoder,
+                do_classifier_free_guidance=do_classifier_free_guidance,
+                do_adversarial_guidance=do_adversarial_guidance,
+                use_freenoise_windowing=use_freenoise_windowing,
             )
 
             # perform guidance
-            if do_classifier_free_guidance:
+            if do_adversarial_guidance and do_classifier_free_guidance:
+                noise_pred_uncond, noise_pred_text, noise_pred_text_perturb = noise_pred.chunk(3)
+                signal_scale = pag_scale
+                if pag_adaptive_scaling > 0.0:
+                    signal_scale = pag_scale - pag_adaptive_scaling * (1000-t)
+                    if signal_scale < 0:
+                        signal_scale = 0
+
+                noise_pred = noise_pred_text + (guidance_scale-1.0) * (noise_pred_text - noise_pred_uncond) + signal_scale * (noise_pred_text - noise_pred_text_perturb)
+
+            elif do_classifier_free_guidance:
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                 noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+            elif do_adversarial_guidance:
+                noise_pred_original, noise_pred_perturb = noise_pred.chunk(2)
+
+                signal_scale = pag_scale
+                if pag_adaptive_scaling > 0.0:
+                    signal_scale = pag_scale - pag_adaptive_scaling * (1000-t)
+                    if signal_scale < 0:
+                        signal_scale = 0
+
+                noise_pred = noise_pred_original + signal_scale * (noise_pred_original - noise_pred_perturb)
+
+            # Rescale guidance
+            if do_classifier_free_guidance and guidance_rescale > 0.0:
+                noise_pred = self.rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
 
             if not isinstance(self.scheduler, DDPMWuerstchenScheduler):
                 ratio_tensor = t
@@ -2801,6 +3079,51 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                 pass
         return data
 
+    def rescale_noise_cfg(
+        self,
+        noise_cfg: torch.Tensor,
+        noise_pred_text: torch.Tensor,
+        guidance_rescale: float=0.0
+    ) -> torch.Tensor:
+        """
+        Rescale `noise_cfg` according to `guidance_rescale`. Based on findings of [Common Diffusion Noise Schedules and
+        Sample Steps are Flawed](https://arxiv.org/pdf/2305.08891.pdf). See Section 3.4
+        """
+        std_text = noise_pred_text.std(dim=list(range(1, noise_pred_text.ndim)), keepdim=True)
+        std_cfg = noise_cfg.std(dim=list(range(1, noise_cfg.ndim)), keepdim=True)
+        # rescale the results from guidance (fixes overexposure)
+        noise_pred_rescaled = noise_cfg * (std_text / std_cfg)
+        # mix with the original results from guidance by factor guidance_rescale to avoid "plain looking" images
+        noise_cfg = guidance_rescale * noise_pred_rescaled + (1 - guidance_rescale) * noise_cfg
+        return noise_cfg
+
+    def rescale_zero_terminal_snr(self, betas: torch.Tensor) -> torch.Tensor:
+        """
+        Rescales betas to have zero terminal SNR Based on https://arxiv.org/pdf/2305.08891.pdf (Algorithm 1)
+        """
+        # Convert betas to alphas_bar_sqrt
+        alphas = 1.0 - betas
+        alphas_cumprod = torch.cumprod(alphas, dim=0)
+        alphas_bar_sqrt = alphas_cumprod.sqrt()
+
+        # Store old values.
+        alphas_bar_sqrt_0 = alphas_bar_sqrt[0].clone()
+        alphas_bar_sqrt_T = alphas_bar_sqrt[-1].clone()
+
+        # Shift so the last timestep is zero.
+        alphas_bar_sqrt -= alphas_bar_sqrt_T
+
+        # Scale so the first timestep is back to the old value.
+        alphas_bar_sqrt *= alphas_bar_sqrt_0 / (alphas_bar_sqrt_0 - alphas_bar_sqrt_T)
+
+        # Convert alphas_bar_sqrt to betas
+        alphas_bar = alphas_bar_sqrt**2  # Revert sqrt
+        alphas = alphas_bar[1:] / alphas_bar[:-1]  # Revert cumprod
+        alphas = torch.cat([alphas_bar[0:1], alphas])
+        betas = 1 - alphas
+
+        return betas
+
     def denoise(
         self,
         height: int,
@@ -2814,6 +3137,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         weight_builder: MaskWeightBuilder,
         guidance_scale: float,
         do_classifier_free_guidance: bool = False,
+        do_adversarial_guidance: bool = False,
         timestep_cond: Optional[torch.Tensor] = None,
         mask: Optional[torch.Tensor] = None,
         mask_image: Optional[torch.Tensor] = None,
@@ -2830,6 +3154,10 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         frequencies: Optional[torch.Tensor] = None,
         amplitudes: Optional[torch.Tensor] = None,
         is_decoder: bool = False,
+        guidance_rescale: float=0.0,
+        pag_scale: float=0.0,
+        pag_adaptive_scaling: float=0.0,
+        use_freenoise_windowing: bool = False,
     ) -> torch.Tensor:
         """
         Executes the denoising loop.
@@ -2858,6 +3186,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                 weight_builder=weight_builder,
                 guidance_scale=guidance_scale,
                 do_classifier_free_guidance=do_classifier_free_guidance,
+                do_adversarial_guidance=do_adversarial_guidance,
                 timestep_cond=timestep_cond,
                 mask=mask,
                 mask_image=mask_image,
@@ -2873,6 +3202,10 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                 frequencies=frequencies,
                 amplitudes=amplitudes,
                 is_decoder=is_decoder,
+                guidance_rescale=guidance_rescale,
+                pag_scale=pag_scale,
+                pag_adaptive_scaling=pag_adaptive_scaling,
+                use_freenoise_windowing=use_freenoise_windowing,
             )
 
         revert_chunker_size: Any = None
@@ -3134,10 +3467,13 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                     # Slice latents
                     latents_for_view = slice_for_view(latents)
 
-                    # expand the latents if we are doing classifier free guidance
-                    latent_model_input = (
-                        torch.cat([latents_for_view] * 2) if do_classifier_free_guidance else latents_for_view
-                    )
+                    # expand the latents if we are doing classifier free guidance or adversarial guidance
+                    if do_classifier_free_guidance and do_adversarial_guidance:
+                        latent_model_input = torch.cat([latents_for_view] * 3)
+                    elif do_classifier_free_guidance or do_adversarial_guidance:
+                        latent_model_input = torch.cat([latents_for_view] * 2)
+                    else:
+                        latent_model_input = latents_for_view
 
                     # Re-match chunk scheduler status
                     self.scheduler.__dict__.update(chunk_scheduler_status[j])
@@ -3160,7 +3496,8 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                     embeds = encoded_prompts.get_embeds(
                         frames=frame_indexes,
                         frequencies=frequencies,
-                        amplitudes=amplitudes
+                        amplitudes=amplitudes,
+                        position=((top, bottom), (left, right)),
                     )
 
                     if embeds is None:
@@ -3176,7 +3513,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                     add_text_embeds = encoded_prompts.get_add_text_embeds(
                         frames=frame_indexes,
                         frequencies=frequencies,
-                        amplitudes=amplitudes
+                        amplitudes=amplitudes,
                     )
                     if add_text_embeds is not None:
                         if not added_cond_kwargs:
@@ -3233,6 +3570,8 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                                 encoder_hidden_states=embeds,
                                 controlnet_conds=controlnet_conds,
                                 added_cond_kwargs=added_cond_kwargs,
+                                do_adversarial_guidance=do_adversarial_guidance,
+                                do_classifier_free_guidance=do_classifier_free_guidance,
                             )
                     else:
                         down_block, mid_block = None, None
@@ -3258,12 +3597,39 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                         added_cond_kwargs=added_cond_kwargs,
                         down_block_additional_residuals=down_block,
                         mid_block_additional_residual=mid_block,
+                        do_classifier_free_guidance=do_classifier_free_guidance,
+                        do_adversarial_guidance=do_adversarial_guidance,
+                        use_freenoise_windowing=use_freenoise_windowing,
                     )
 
                     # perform guidance
-                    if do_classifier_free_guidance:
+                    if do_adversarial_guidance and do_classifier_free_guidance:
+                        noise_pred_uncond, noise_pred_text, noise_pred_text_perturb = noise_pred.chunk(3)
+                        signal_scale = pag_scale
+                        if pag_adaptive_scaling > 0.0:
+                            signal_scale = pag_scale - pag_adaptive_scaling * (1000-t)
+                            if signal_scale < 0:
+                                signal_scale = 0
+
+                        noise_pred = noise_pred_text + (guidance_scale-1.0) * (noise_pred_text - noise_pred_uncond) + signal_scale * (noise_pred_text - noise_pred_text_perturb)
+
+                    elif do_classifier_free_guidance:
                         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                    elif do_adversarial_guidance:
+                        noise_pred_original, noise_pred_perturb = noise_pred.chunk(2)
+
+                        signal_scale = pag_scale
+                        if pag_adaptive_scaling > 0.0:
+                            signal_scale = pag_scale - pag_adaptive_scaling * (1000-t)
+                            if signal_scale < 0:
+                                signal_scale = 0
+
+                        noise_pred = noise_pred_original + signal_scale * (noise_pred_original - noise_pred_perturb)
+
+                    # Rescale guidance
+                    if do_classifier_free_guidance and guidance_rescale > 0.0:
+                        noise_pred = self.rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=guidance_rescale)
 
                     # compute the previous noisy sample x_t -> x_t-1
                     denoised_latents = self.scheduler.step( #type: ignore[attr-defined]
@@ -3925,6 +4291,19 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         ratio = (((var * min_var) ** 0.5).acos() / (torch.pi * 0.5)) * (1 + s) - s
         return ratio
 
+    def loglinear_interp(self, t_steps: List[int], num_steps: int) -> List[int]:
+        """
+        Performs log-linear interpolation of a given array of decreasing numbers.
+        """
+        xs = np.linspace(0, 1, len(t_steps))
+        ys = np.log(t_steps[::-1])
+        
+        new_xs = np.linspace(0, 1, num_steps)
+        new_ys = np.interp(new_xs, xs, ys)
+        
+        interped_ys = np.exp(new_ys)[::-1].copy()
+        return interped_ys
+
     @torch.no_grad()
     def __call__(
         self,
@@ -3943,6 +4322,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         control_images: ControlImageArgType=None,
         ip_adapter_images: ImagePromptArgType=None,
         ip_adapter_model: Optional[IP_ADAPTER_LITERAL]=None,
+        ip_adapter_positional: bool=True,
         height: Optional[int]=None,
         width: Optional[int]=None,
         tiling_unet: bool=False,
@@ -3958,6 +4338,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         num_inference_steps: int=20,
         num_decoder_steps: int=10,
         guidance_scale: float=7.5,
+        guidance_rescale: float=0.0,
         num_results_per_prompt: int=1,
         animation_frames: Optional[int]=None,
         motion_scale: Optional[float]=None,
@@ -3989,6 +4370,11 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         noise_method: NOISE_METHOD_LITERAL="perlin",
         noise_blend_method: LATENT_BLEND_METHOD_LITERAL="inject",
         num_denoising_iterations: Optional[int]=None,
+        pag_scale: float=0.0,
+        pag_adaptive_scaling: float=0.0,
+        pag_applied_layers: Optional[List[str]]=None,
+        pag_applied_layers_index: Optional[List[str]]=None,
+        use_freenoise_windowing: bool=False,
     ) -> Union[
         StableDiffusionPipelineOutput,
         Tuple[Union[torch.Tensor, np.ndarray, List[PIL.Image.Image]], Optional[List[bool]]],
@@ -4001,6 +4387,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
             batch_size = prompt_embeds.shape[0]
         else:
             batch_size = 1
+
         image = self.standardize_image(
             image,
             animation_frames=animation_frames,
@@ -4117,6 +4504,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
             has_time_cond_proj = False
 
         do_classifier_free_guidance = guidance_scale > 1.0 and not has_time_cond_proj
+        do_adversarial_guidance = pag_scale > 0.0 and (pag_applied_layers or pag_applied_layers_index)
 
         # Calculate chunks
         chunker = Chunker(
@@ -4125,8 +4513,8 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
             size=self.tiling_size if self.tiling_size else 1024 if self.is_sdxl else 512,
             stride=self.tiling_stride,
             frames=animation_frames,
-            frame_size=None,
-            frame_stride=None,
+            frame_size=None if use_freenoise_windowing else self.frame_window_size,
+            frame_stride=None if use_freenoise_windowing else self.frame_window_stride,
             loop=loop,
             tile=tile,
         )
@@ -4139,9 +4527,19 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
             logger.warning(f"Strength and steps combination will result in no inference steps, changing `num_inference_steps` to {required_steps}")
             num_inference_steps = required_steps
 
-        self.scheduler.set_timesteps(num_inference_steps, device=device) # type: ignore[attr-defined]
+        if "timesteps" in set(inspect.signature(self.scheduler.set_timesteps).parameters.keys()):
+            if self.is_sdxl:
+                optimized_schedule = [999, 845, 730, 587, 443, 310, 193, 116, 53, 13, 0]
+            else:
+                optimized_schedule = [999, 850, 736, 645, 545, 455, 343, 233, 124, 24, 0]
+            if num_inference_steps == len(optimized_schedule):
+                self.scheduler.set_timesteps(timesteps=optimized_schedule, device=device)
+            else:
+                self.scheduler.set_timesteps(timesteps=self.loglinear_interp(optimized_schedule, num_inference_steps), device=device)
+        else:
+            self.scheduler.set_timesteps(num_inference_steps, device=device) # type: ignore[attr-defined]
 
-        if image is not None and (strength is not None or denoising_start is not None):
+        if image is not None and ((strength is not None and strength < 1.0) or denoising_start is not None):
             # Scale timesteps by strength
             timesteps, num_inference_steps = self.get_timesteps(
                 num_inference_steps,
@@ -4220,6 +4618,10 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         frame_decode_steps = ceil(num_frames / decode_chunk_size)
         vae_steps = vae_chunks * (encoding_steps + (decoding_steps * frame_decode_steps))
 
+        ip_adapter_positional = ip_adapter_positional and unet_spatial_chunks > 1
+        if ip_adapter_positional:
+            image_prompt_probes *= unet_spatial_chunks
+
         if prompts is not None:
             clip_steps = len(prompts)
         else:
@@ -4256,7 +4658,8 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
             animation_frames=animation_frames,
             device=device,
             ip_adapter_scale=ip_adapter_scale,
-            step_complete=step_complete
+            step_complete=step_complete,
+            guidance_rescale=guidance_rescale
         ):
             # First standardize to list of prompts
             if prompts is None:
@@ -4292,6 +4695,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                         device,
                         num_results_per_prompt,
                         do_classifier_free_guidance,
+                        do_adversarial_guidance,
                         given_prompt.negative,
                         prompt_embeds=prompt_embeds,
                         pooled_prompt_embeds=pooled_prompt_embeds,
@@ -4307,6 +4711,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                         device,
                         num_results_per_prompt,
                         do_classifier_free_guidance,
+                        do_adversarial_guidance,
                         given_prompt.negative,
                         prompt_embeds=prompt_embeds,
                         negative_prompt_embeds=negative_prompt_embeds,
@@ -4336,6 +4741,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                 prompts=encoded_prompt_list,
                 use_pooled=self.is_sdxl or self.is_stable_cascade,
                 do_classifier_free_guidance=do_classifier_free_guidance,
+                do_adversarial_guidance=do_adversarial_guidance,
                 image_prompt_embeds=None, # Will be set later
                 image_uncond_prompt_embeds=None # Will be set later
             )
@@ -4416,7 +4822,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                     if latents:
                         prepared_latents = latents.to(device) * self.scheduler.init_noise_sigma # type: ignore[attr-defined]
                     else:
-                        if strength is not None and strength < 1.0:
+                        if init_image is not None:
                             prepared_latents = self.prepare_image_latents(
                                 image=init_image.to(device=device), # type: ignore[union-attr]
                                 timestep=timesteps[:1].repeat(batch_size),
@@ -4455,6 +4861,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                         generator=generator,
                         weight_builder=weight_builder,
                         do_classifier_free_guidance=do_classifier_free_guidance,
+                        do_adversarial_guidance=do_adversarial_guidance,
                         progress_callback=step_complete,
                         animation_frames=animation_frames,
                         tiling=tiling_vae,
@@ -4558,16 +4965,20 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                                         controlnet_image = self.image_processor.preprocess([
                                             i.convert("RGB") for i in controlnet_image # type: ignore
                                         ]).to(dtype=encoded_prompts.dtype, device=device)
-                                        controlnet_image = self.encode_image(
-                                            image=controlnet_image,
-                                            device=device,
-                                            generator=generator,
-                                            dtype=encoded_prompts.dtype,
-                                            chunker=chunker,
-                                            weight_builder=weight_builder,
-                                            progress_callback=step_complete,
-                                            tiling=tiling_vae
-                                        )
+
+                                        controlnet_image = torch.cat([
+                                            self.encode_image(
+                                                image=i.unsqueeze(0),
+                                                device=device,
+                                                generator=generator,
+                                                dtype=encoded_prompts.dtype,
+                                                chunker=chunker,
+                                                weight_builder=weight_builder,
+                                                progress_callback=step_complete,
+                                                tiling=tiling_vae
+                                            )
+                                            for i in controlnet_image
+                                        ])
 
                                     prepared_controlnet_image, prepared_controlnet_mask = self.prepare_control_image(
                                         image=controlnet_image,
@@ -4579,7 +4990,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                                         dtype=encoded_prompts.dtype,
                                         do_classifier_free_guidance=do_classifier_free_guidance,
                                         animation_frames=1 if not animation_frames else animation_frames,
-                                        conditioning_frame=0 if not conditioning_frame else conditioning_frame
+                                        conditioning_frame=0 if animation_frames else conditioning_frame
                                     )
 
                                     if conditioning_standalone:
@@ -4669,38 +5080,81 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                 # Get prompt embeds here if using IP adapter
                 if ip_adapter_images is not None:
                     logger.debug(f"Performing {image_prompt_probes} image prompt probe(s)")
-                    ip_adapter_image_embeds = torch.Tensor().to(
-                        device=device,
-                        dtype=encoded_prompts.dtype
-                    )
-                    ip_adapter_image_uncond_embeds = torch.Tensor().to(
-                        device=device,
-                        dtype=encoded_prompts.dtype
-                    )
+                    ip_adapter_image_embeds = torch.Tensor().to(device=device, dtype=encoded_prompts.dtype)
+                    ip_adapter_image_uncond_embeds = torch.Tensor().to(device=device, dtype=encoded_prompts.dtype)
 
                     for images, scale in ip_adapter_images:
-                        image_prompt_embeds = torch.Tensor().to(
-                            device=device,
-                            dtype=encoded_prompts.dtype
-                        )
-                        image_uncond_prompt_embeds = torch.Tensor().to(
-                            device=device,
-                            dtype=encoded_prompts.dtype
-                        )
-                        for img in images:
-                            image_embeds, uncond_embeds = self.get_image_embeds(
-                                img,
-                                num_results_per_prompt
-                            )
-                            step_complete(True)
-                            image_prompt_embeds = torch.cat([
-                                image_prompt_embeds,
-                                image_embeds.unsqueeze(0)
-                            ], dim=0)
-                            image_uncond_prompt_embeds = torch.cat([
-                                image_uncond_prompt_embeds,
-                                uncond_embeds.unsqueeze(0)
-                            ], dim=0)
+                        image_prompt_embeds = None
+                        image_uncond_prompt_embeds = None
+                        num_conds = len(images)
+
+                        def add_ip_condition(
+                            index: int,
+                            condition: torch.Tensor,
+                            uncond_condition: torch.Tensor,
+                            y: Optional[int]=None,
+                            x: Optional[int]=None,
+                        ) -> None:
+                            """
+                            Add an image prompt condition to the prompt embeds, ensuring it exists and is the right size.
+                            """
+                            nonlocal image_prompt_embeds, image_uncond_prompt_embeds
+                            if ip_adapter_positional:
+                                h, w, b, t, e = condition.shape
+                            else:
+                                b, t, e = condition.shape
+                                h, w = None, None
+                            if image_prompt_embeds is None or image_uncond_prompt_embeds is None:
+                                if ip_adapter_positional:
+                                    shape = (num_conds, height // self.vae_scale_factor, width // self.vae_scale_factor, b, t, e)
+                                else:
+                                    shape = (num_conds, b, t, e)
+                                image_prompt_embeds = torch.zeros(shape, device=device, dtype=encoded_prompts.dtype)
+                                image_uncond_prompt_embeds = torch.zeros(shape, device=device, dtype=encoded_prompts.dtype)
+                            if x is not None and y is not None:
+                                image_prompt_embeds[index, y:y+h, x:x+w] = condition
+                                image_uncond_prompt_embeds[index, y:y+h, x:x+w] = uncond_condition
+                            else:
+                                image_prompt_embeds[index] = condition
+                                image_uncond_prompt_embeds[index] = uncond_condition
+
+                        for i, img in enumerate(images):
+                            if ip_adapter_positional:
+                                # Disable tiling if it was enabled
+                                chunker.tile = False
+                                for (y_start, y_end), (x_start, x_end) in chunker.chunks:
+                                    image_embeds, uncond_embeds = self.get_image_embeds(
+                                        img.crop((
+                                            x_start * self.vae_scale_factor,
+                                            y_start * self.vae_scale_factor,
+                                            x_end * self.vae_scale_factor,
+                                            y_end * self.vae_scale_factor
+                                        )),
+                                        num_results_per_prompt,
+                                    )
+                                    image_embeds = repeat(image_embeds, "b t e -> h w b t e", h=(y_end-y_start), w=(x_end-x_start))
+                                    uncond_embeds = repeat(uncond_embeds, "b t e -> h w b t e", h=(y_end-y_start), w=(x_end-x_start))
+                                    add_ip_condition(
+                                        i,
+                                        image_embeds,
+                                        uncond_embeds,
+                                        y=y_start,
+                                        x=x_start
+                                    )
+                                    step_complete(True)
+                                # Re-enable tiling if it was enabled
+                                chunker.tile = tile
+                            else:
+                                image_embeds, uncond_embeds = self.get_image_embeds(
+                                    img,
+                                    num_results_per_prompt
+                                )
+                                add_ip_condition(
+                                    i,
+                                    image_embeds,
+                                    uncond_embeds,
+                                )
+                                step_complete(True)
 
                         # Repeat last image embed as needed to match frames
                         if animation_frames:
@@ -4745,7 +5199,12 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                             negative_aesthetic_score=negative_aesthetic_score,
                         )
                         if do_classifier_free_guidance:
-                            add_time_ids = torch.cat([add_neg_time_ids, add_time_ids], dim=0)
+                            if do_adversarial_guidance:
+                                add_time_ids = torch.cat([add_neg_time_ids, add_time_ids, add_time_ids], dim=0)
+                            else:
+                                add_time_ids = torch.cat([add_neg_time_ids, add_time_ids], dim=0)
+                        elif do_adversarial_guidance:
+                            add_time_ids = torch.cat([add_time_ids, add_time_ids], dim=0)
                     else:
                         add_time_ids, _ = self.get_add_time_ids(
                             original_size=original_size,
@@ -4753,11 +5212,13 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                             target_size=target_size,
                             dtype=encoded_prompts.dtype,
                         )
-                        if do_classifier_free_guidance:
+                        if do_adversarial_guidance and do_classifier_free_guidance:
+                            add_time_ids = torch.cat([add_time_ids, add_time_ids, add_time_ids], dim=0)
+                        elif do_adversarial_guidance or do_classifier_free_guidance:
                             add_time_ids = torch.cat([add_time_ids, add_time_ids], dim=0)
                     add_time_ids = add_time_ids.to(device).repeat(batch_size, 1)
                     added_cond_kwargs["time_ids"] = add_time_ids
-            
+
                 # Set guidance scale embedding (LCM)
                 timestep_cond: Optional[torch.Tensor] = None
                 if "time_cond_proj_dim" in self.unet.config and self.unet.config.time_cond_proj_dim is not None: # type: ignore[attr-defined]
@@ -4813,6 +5274,13 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                     motion_scale=motion_scale,
                     offload_models=offload_models
                 ) # May be overridden by RT
+
+                # Apply adversarial guidance
+                self.maybe_apply_adversarial_guidance(
+                    pag_applied_layers=pag_applied_layers,
+                    pag_applied_layers_index=pag_applied_layers_index,
+                    do_classifier_free_guidance=do_classifier_free_guidance,
+                )
 
                 # FreeInit method
                 initial_noisy_latents = None
@@ -4893,6 +5361,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                         guidance_scale=guidance_scale,
                         timestep_cond=timestep_cond,
                         do_classifier_free_guidance=do_classifier_free_guidance,
+                        do_adversarial_guidance=do_adversarial_guidance,
                         mask=prepared_mask,
                         mask_image=prepared_image_latents,
                         image=init_image,
@@ -4907,6 +5376,10 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                         tiling=tiling_unet,
                         frequencies=frequencies, # type: ignore[arg-type]
                         amplitudes=amplitudes, # type: ignore[arg-type]
+                        guidance_rescale=guidance_rescale,
+                        pag_scale=pag_scale,
+                        pag_adaptive_scaling=pag_adaptive_scaling,
+                        use_freenoise_windowing=use_freenoise_windowing,
                     )
 
                     # Second-stage denoising loop
@@ -4971,6 +5444,9 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                 del prepared_mask
                 del prepared_image_latents
 
+                # Remove adversarial guidance
+                self.maybe_remove_adversarial_guidance()
+
                 # Unload controlnets to free memory
                 if self.controlnets is not None:
                     for name in self.controlnets:
@@ -5027,6 +5503,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
             if hasattr(self, "final_offload_hook") and self.final_offload_hook is not None:
                 self.final_offload_hook.offload()
 
+            self.flexible_lengths = None
             empty_cache()
 
             if not return_dict:

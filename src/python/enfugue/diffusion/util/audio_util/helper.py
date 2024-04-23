@@ -71,7 +71,8 @@ class Audio:
     def save(
         self,
         path: str,
-        rate: Optional[int]=None
+        rate: Optional[int]=None,
+        maximum_seconds: Optional[float]=None
      ) -> int:
         """
         Saves the audio frames to file
@@ -82,7 +83,7 @@ class Audio:
             rate = 44100
         if path.startswith("~"):
             path = os.path.expanduser(path)
-        clip = self.get_clip(rate=rate)
+        clip = self.get_clip(rate=rate, maximum_seconds=maximum_seconds)
         clip.write_audiofile(path)
         if not os.path.exists(path):
             raise IOError(f"Nothing was written to {path}.")

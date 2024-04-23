@@ -5,6 +5,8 @@ from dataclasses import dataclass, asdict
 
 from typing import List, Optional, Callable, Dict, Any, TYPE_CHECKING
 
+from enfugue.util import logger
+
 if TYPE_CHECKING:
     from enfugue.diffusion.manager import DiffusionPipelineManager
 
@@ -17,6 +19,8 @@ class CaptionInvocation:
     """
     prompts: List[str] # Required
     num_results_per_prompt: int = 1
+    prompt_format: Optional[Literal["sd", "dalle3", "danbooru"]] = None
+    model: Optional[Literal["zephyr", "gemma", "luxia", "smaug"]] = None
 
     def execute(
         self,
@@ -44,7 +48,14 @@ class CaptionInvocation:
             pipeline.set_task_callback(task_callback)
         pipeline.start_keepalive()
         try:
-            with pipeline.language.caption_upsampler(safe=pipeline.safe) as sampler:
+            model_name = "dtg" if self.prompt_format == "danbooru" else "zephyr" if self.model is None else self.model
+            role = "tag" if self.prompt_format == "danbooru" else "dalle3" if self.prompt_format == "dalle3" else "caption"
+            logger.info(f"CAPT: {model_name} {role}")
+            with pipeline.language.converse(
+                model=model_name,
+                role=role,
+                safe=pipeline.safe
+            ) as sampler:
                 # Call task callback if set
                 if task_callback is not None:
                     task_callback("Upsampling captions")

@@ -24,6 +24,7 @@ class DetailingController extends Controller {
                 "faceInpaint": false,
                 "handInpaint": false,
                 "inpaintStrength": 0.25,
+                "detailUpscale": 0.5,
                 "detailStrength": 0.0,
                 "detailInferenceSteps": null,
                 "detailGuidanceScale": null,
@@ -53,6 +54,7 @@ class DetailingController extends Controller {
             this.engine.detailerFaceRestore = values.faceRestore;
             this.engine.detailerFaceInpaint = values.faceInpaint;
             this.engine.detailerHandInpaint = values.handInpaint;
+            this.engine.detailerUpscale = values.detailUpscale;
             this.engine.detailerInpaintStrength = values.inpaintStrength;
             this.engine.detailerStrength = values.detailStrength;
             this.engine.detailerGuidanceScale = values.detailGuidanceScale;

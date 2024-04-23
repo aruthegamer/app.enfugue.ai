@@ -2,15 +2,17 @@ from __future__ import annotations
 
 from typing import Iterator, Tuple, Callable, Optional, TYPE_CHECKING
 
+from functools import cached_property
 from contextlib import contextmanager, ExitStack
 
 from enfugue.diffusion.constants import CONTROLNET_LITERAL
-from enfugue.diffusion.support.model import SupportModelProcessor
+from enfugue.diffusion.support.model import SupportModel, SupportModelProcessor
 
 if TYPE_CHECKING:
     import torch
     from PIL.Image import Image
-    from enfugue.diffusion.support.depth import DepthDetector
+    from enfugue.diffusion.support.depth import DepthNormalDetector
+    from enfugue.diffusion.support.normal import NormalDetector
     from enfugue.diffusion.support.edge import EdgeDetector
     from enfugue.diffusion.support.line import LineDetector
     from enfugue.diffusion.support.pose import PoseDetector
@@ -22,25 +24,11 @@ class PassThroughImageProcessor(SupportModelProcessor):
     def __call__(self, image: Image) -> Image:
         return image
 
-class ControlImageProcessor:
+class ControlImageProcessor(SupportModel):
     """
     Amalgamates all controlnet processors.
     Allows multiple contexts at once
     """
-    task_callback: Optional[Callable[[str], None]] = None
-    def __init__(
-        self,
-        root_dir: str,
-        model_dir: str,
-        device: torch.device,
-        dtype: torch.dtype,
-        offline: bool = False
-    ) -> None:
-        self.root_dir = root_dir
-        self.model_dir = model_dir
-        self.device = device
-        self.dtype = dtype
-        self.offline = offline
 
     @contextmanager
     def processors(self, *controlnets: CONTROLNET_LITERAL) -> Iterator[Tuple[SupportModelProcessor, ...]]:
@@ -67,6 +55,7 @@ class ControlImageProcessor:
         Gets one controlnet processor in context.
         """
         context: Callable
+        kwargs: Dict[str, Any] = {}
         if controlnet == "canny":
             context = self.edge_detector.canny
         elif controlnet == "pidi":
@@ -76,9 +65,11 @@ class ControlImageProcessor:
         elif controlnet in ["scribble", "sparse-scribble"]:
             context = self.edge_detector.scribble
         elif controlnet == "depth":
-            context = self.depth_detector.midas
+            context = self.depth_normal_detector.midas
+            kwargs["include_normal"] = False
         elif controlnet == "normal":
-            context = self.depth_detector.normal
+            context = self.depth_normal_detector.midas
+            kwargs["include_depth"] = False
         elif controlnet == "pose":
             context = self.pose_detector.best
         elif controlnet == "line":
@@ -89,76 +80,40 @@ class ControlImageProcessor:
             context = self.line_detector.mlsd
         else:
             context = PassThroughImageProcessor
-        with context() as processor:
+        with context(**kwargs) as processor:
             yield processor
 
-    @property
+    @cached_property
     def edge_detector(self) -> EdgeDetector:
         """
         Gets the edge detector.
         """
-        if not hasattr(self, "_edge_detector"):
-            from enfugue.diffusion.support.edge import EdgeDetector
-            self._edge_detector = EdgeDetector(
-                self.root_dir,
-                self.model_dir,
-                device=self.device,
-                dtype=self.dtype,
-                offline=self.offline
-            )
-            self._edge_detector.task_callback = self.task_callback
-        return self._edge_detector
+        from enfugue.diffusion.support.edge import EdgeDetector
+        return EdgeDetector.clone(self)
 
-    @property
+    @cached_property
     def line_detector(self) -> LineDetector:
         """
         Gets the line detector.
         """
-        if not hasattr(self, "_line_detector"):
-            from enfugue.diffusion.support.line import LineDetector
-            self._line_detector = LineDetector(
-                self.root_dir,
-                self.model_dir,
-                device=self.device,
-                dtype=self.dtype,
-                offline=self.offline
-            )
-            self._line_detector.task_callback = self.task_callback
-        return self._line_detector
+        from enfugue.diffusion.support.line import LineDetector
+        return LineDetector.clone(self)
 
-    @property
-    def depth_detector(self) -> DepthDetector:
+    @cached_property
+    def depth_normal_detector(self) -> DepthNormalDetector:
         """
         Gets the depth detector.
         """
-        if not hasattr(self, "_depth_detector"):
-            from enfugue.diffusion.support.depth import DepthDetector
-            self._depth_detector = DepthDetector(
-                self.root_dir,
-                self.model_dir,
-                device=self.device, 
-                dtype=self.dtype,
-                offline=self.offline
-            )
-            self._depth_detector.task_callback = self.task_callback
-        return self._depth_detector
+        from enfugue.diffusion.support.depth import DepthNormalDetector
+        return DepthNormalDetector.clone(self)
 
-    @property
+    @cached_property
     def pose_detector(self) -> PoseDetector:
         """
         Gets the pose detector.
         """
-        if not hasattr(self, "_pose_detector"):
-            from enfugue.diffusion.support.pose import PoseDetector
-            self._pose_detector = PoseDetector(
-                self.root_dir,
-                self.model_dir,
-                device=self.device,
-                dtype=self.dtype,
-                offline=self.offline
-            )
-            self._pose_detector.task_callback = self.task_callback
-        return self._pose_detector
+        from enfugue.diffusion.support.pose import PoseDetector
+        return PoseDetector.clone(self)
 
     def __call__(self, controlnet: CONTROLNET_LITERAL, image: Image) -> Image:
         """

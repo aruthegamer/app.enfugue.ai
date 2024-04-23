@@ -122,6 +122,7 @@ __all__ = [
     "LATENT_BLEND_METHOD_LITERAL",
     "NOISE_METHOD_LITERAL",
     "IP_ADAPTER_LITERAL",
+    "TEXT_ENCODER_LITERAL",
     "ANIMATION_ENGINE_LITERAL",
     "OPTICAL_FLOW_METHOD_LITERAL",
     "SD1_CONFIG_URL",
@@ -192,12 +193,13 @@ DEVICE_LITERAL = Literal["cpu", "cuda", "dml", "mps"]
 PIPELINE_SWITCH_MODE_LITERAL = Literal["offload", "unload"]
 SCHEDULER_LITERAL = Literal[
     "ddim", "ddpm", "deis",
-    "dpmsm", "dpmsms", "dpmsmk", "dpmsmka",
-    "dpmss", "dpmssk", "heun",
-    "dpmd", "dpmdk", "adpmd",
-    "adpmdk", "dpmsde", "unipc",
-    "lmsd", "lmsdk", "pndm",
-    "eds", "edsk", "eads", "lcm"
+    "dpmsm", "dpmsms", "dpmsmk",
+    "dpmsmka", "dpmss", "dpmssk",
+    "heun", "dpmd", "dpmdk",
+    "adpmd", "adpmdk", "dpmsde",
+    "unipc", "lmsd", "lmsdk",
+    "pndm", "eds", "edsk",
+    "eads", "lcm", "tcd"
 ]
 UPSCALE_LITERAL = Literal[
     "esrgan", "esrganime", "gfpgan",
@@ -240,6 +242,9 @@ NOISE_METHOD_LITERAL = Literal[
 IP_ADAPTER_LITERAL = Literal[
     "default", "plus", "composition", "plus-face",
     "full-face", "face-id", "face-id-plus", "face-id-portrait"
+]
+TEXT_ENCODER_LITERAL = Literal[
+    "CLIP", "T5-L", "T5-XL"
 ]
 ANIMATION_ENGINE_LITERAL = Literal[
     "ad_hsxl", "svd", "dynamicrafter"
@@ -289,7 +294,7 @@ CONTROLNET_QR = "https://huggingface.co/monster-labs/control_v1p_sd15_qrcode_mon
 CONTROLNET_PIDI_XL = "https://huggingface.co/SargeZT/controlnet-sd-xl-1.0-softedge-dexined/resolve/main/controlnet-sd-xl-1.0-softedge-dexined.safetensors"
 CONTROLNET_QR_XL = "https://huggingface.co/monster-labs/control_v1p_sdxl_qrcode_monster/resolve/main/diffusion_pytorch_model.safetensors?filename=control_v1p_sdxl_qrcode_monster.safetensors"
 
-CONTROLNET_TILE_XL = "https://huggingface.co/TTPlanet/TTPLanet_SDXL_Controlnet_Tile_Realistic_V1/resolve/main/TTPLANET_Controlnet_Tile_realistic_v1_fp16.safetensors"
+CONTROLNET_TILE_XL = "https://huggingface.co/TTPlanet/TTPLanet_SDXL_Controlnet_Tile_Realistic/resolve/main/TTPLANET_Controlnet_Tile_realistic_v2_fp16.safetensors"
 CONTROLNET_CANNY_XL = "https://huggingface.co/diffusers/controlnet-canny-sdxl-1.0/resolve/main/diffusion_pytorch_model.safetensors?filename=controlnet-canny-sdxl-1.0.safetensors"
 CONTROLNET_DEPTH_XL = "https://huggingface.co/diffusers/controlnet-depth-sdxl-1.0/resolve/main/diffusion_pytorch_model.safetensors?filename=controlnet-depth-sdxl-1.0.safetensors"
 CONTROLNET_POSE_XL = "https://huggingface.co/thibaud/controlnet-openpose-sdxl-1.0/resolve/main/OpenPoseXL2.safetensors"

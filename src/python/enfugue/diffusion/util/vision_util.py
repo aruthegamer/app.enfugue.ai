@@ -122,8 +122,7 @@ class ComputerVision:
             maxLevel=lk_max_level,
             criteria=lk_criteria
         )
-        print(image_1.shape)
-        print(image_2.shape)
+
         selected_new = features_1[st == 1]
         selected_old = features[st == 1]
         h, w = image_1.shape

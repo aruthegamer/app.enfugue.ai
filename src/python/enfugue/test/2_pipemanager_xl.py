@@ -3,46 +3,54 @@ Uses the pipemanager to create a simple image using default settings
 """
 import os
 from enfugue.diffusion.manager import DiffusionPipelineManager
-from enfugue.diffusion.constants import DEFAULT_SDXL_MODEL
+from enfugue.diffusion.constants import *
 from pibble.util.log import DebugUnifiedLoggingContext
+
+SEED = 1234
 
 def main() -> None:
     with DebugUnifiedLoggingContext():
-        save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test-results", "base")
+        save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test-results", "base-xl")
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
-        
-        kwargs = {
-            "prompt": "A happy looking puppy",
-            "guidance_scale": 5.0,
-            "width": 1024,
-            "height": 1024
-        }
 
-        # Start with absolute defaults.
-        # Even if there's nothing on your machine, this should work by downloading everything needed.
         manager = DiffusionPipelineManager()
         manager.model = DEFAULT_SDXL_MODEL
-        
-        def run_and_save(filename: str) -> None:
-            manager.seed = 1238421 # set seed for reproduceability
-            manager(**kwargs)["images"][0].save(os.path.join(save_dir, filename))
+        kwargs = {"prompt": "A photograph of a happy looking puppy", "guidance_scale": 0.0}
 
-        run_and_save("puppy-xl.png")
+        # No guidance
+        manager.seed = SEED
+        manager(**kwargs)["images"][0].save(os.path.join(save_dir, "puppy-none.png"))
 
-        # Add prompt 2
-        kwargs["prompt_2"] = "golden retriever"
-        run_and_save("puppy-xl-2.png")
+        # Classifier-Free Guidance
+        kwargs["guidance_scale"] = 5.0
+        kwargs["negative_prompt"] = "poor quality, blurry"
+        manager.seed = SEED
+        manager(**kwargs)["images"][0].save(os.path.join(save_dir, "puppy-cfg.png"))
 
-        # Add the refiner
-        manager.refiner = "sd_xl_refiner_1.0.safetensors"
-        del kwargs["prompt_2"]
-        run_and_save("puppy-xl-refined.png")
+        # Classifier-Free Guidance + Rescale
+        kwargs["guidance_rescale"] = 0.7
+        manager.seed = SEED
+        manager(**kwargs)["images"][0].save(os.path.join(save_dir, "puppy-cfg-scale.png"))
 
-        # Add prompt 2
-        kwargs["prompt_2"] = "golden retriever"
-        run_and_save("puppy-xl-refined-2.png")
-        
+        # Perturbed Self-Attention Guidance (Adversarial Guidance)
+        kwargs["guidance_scale"] = 0.0
+        kwargs["guidance_rescale"] = 0.0
+        kwargs["pag_scale"] = 5.0
+        kwargs["pag_applied_layers"] = ["mid"] # All middle layers
+        manager.seed = SEED
+        manager(**kwargs)["images"][0].save(os.path.join(save_dir, "puppy-pag.png"))
+
+        # Classifier-Free Guidance + Perturbed Self-Attention Guidance
+        kwargs["pag_scale"] = 3.0
+        kwargs["guidance_scale"] = 4.0
+        manager.seed = SEED
+        manager(**kwargs)["images"][0].save(os.path.join(save_dir, "puppy-cfg-pag.png"))
+
+        # Classifier-Free Guidance + Perturbed Self-Attention Guidance + Rescale
+        kwargs["guidance_rescale"] = 0.7
+        manager.seed = SEED
+        manager(**kwargs)["images"][0].save(os.path.join(save_dir, "puppy-cfg-pag-scale.png"))
 
 if __name__ == "__main__":
     main()

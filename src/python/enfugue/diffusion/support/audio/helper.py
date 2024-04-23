@@ -52,7 +52,7 @@ class MetaVoiceProcessor(TextToAudioProcessor):
         top_k: Optional[int] = None,
         top_p: float = 0.95,
         temperature: float = 1.0,
-        batch_size: int=1,
+        batch_size: int = 1,
     ) -> List[str]:
         """
         Samples the audio model
@@ -67,11 +67,12 @@ class MetaVoiceProcessor(TextToAudioProcessor):
                 speaker_embeddings.append(embedding)
             elif isinstance(embedding, str):
                 basename, ext = os.path.splitext(os.path.basename(embedding))
-                if ext in [".bin", ".pt", ".safetensors"]:
+                if ext in [".bin", ".pt", ".pth"]:
                     logger.debug(f"Loading embeddings from {basename}")
                     speaker_embeddings.append(
-                        load_state_dict(embedding).to(
-                            self.first_stage_model.config.device
+                        torch.load(
+                            embedding,
+                            map_location=self.first_stage_model.config.device
                         )
                     )
                 else:
@@ -179,6 +180,7 @@ class AudioSupportModel(SupportModel):
                 first_stage_adapter = FlattenedInterleavedEncodec2Codebook(
                     end_of_audio_token=1024
                 )
+                
                 first_stage = Model(
                     first_stage_config,
                     TrainedBPETokeniser,

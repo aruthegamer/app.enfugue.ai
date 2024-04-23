@@ -23,7 +23,7 @@ def main() -> None:
     output_dir = os.path.join(here, "test-results", "i2v")
     input_dir = os.path.join(here, "test-images")
     input_image = image_from_uri(os.path.join(input_dir, "i2v.png"))
-    input_image_2 = image_from_uri(os.path.join(input_dir, "i2v2.png"))
+#    input_image_2 = image_from_uri(os.path.join(input_dir, "i2v2.png"))
 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -33,11 +33,11 @@ def main() -> None:
         manager.dynamicrafter_model = "1024"
         result = manager.dynamicrafter(
             [input_image],
-            prompt="a woman puts on a record and dances",
+            prompt="a man drives a tractor through an open field",
             fs=12,
             num_frames=32,
             frame_window_size=16,
-            frame_window_stride=8,
+            frame_window_stride=4,
 #            mask=image_from_uri(os.path.join(input_dir, "i2v-mask.png"))
         )
         Video(result).save(

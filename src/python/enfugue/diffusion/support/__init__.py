@@ -1,7 +1,7 @@
 from enfugue.diffusion.support.audio import AudioSupportModel
 from enfugue.diffusion.support.edge import EdgeDetector
 from enfugue.diffusion.support.line import LineDetector
-from enfugue.diffusion.support.depth import DepthDetector
+from enfugue.diffusion.support.depth import DepthNormalDetector
 from enfugue.diffusion.support.pose import PoseDetector
 from enfugue.diffusion.support.processor import ControlImageProcessor
 from enfugue.diffusion.support.upscale import Upscaler
@@ -16,6 +16,6 @@ from enfugue.diffusion.support.drag import DragAnimator
 from enfugue.diffusion.support.i2v import ImageAnimator
 from enfugue.diffusion.support.model import SupportModel, SupportModelPipeline
 
-EdgeDetector, LineDetector, DepthDetector, PoseDetector, ControlImageProcessor, Upscaler, BackgroundRemover, IPAdapter, LanguageSupportModel, Interpolator, DragAnimator, Unimatch, FaceAnalyzer, AudioSupportModel, SegmentationDetector, ImageAnimator, SupportModel, SupportModelPipeline  # Silence importchecker
+EdgeDetector, LineDetector, DepthNormalDetector, PoseDetector, ControlImageProcessor, Upscaler, BackgroundRemover, IPAdapter, LanguageSupportModel, Interpolator, DragAnimator, Unimatch, FaceAnalyzer, AudioSupportModel, SegmentationDetector, ImageAnimator, SupportModel, SupportModelPipeline  # Silence importchecker
 
-__all__ = ["EdgeDetector", "LineDetector", "DepthDetector", "PoseDetector", "ControlImageProcessor", "Upscaler", "BackgroundRemover", "IPAdapter", "LanguageSupportModel", "Interpolator", "DragAnimator", "Unimatch", "FaceAnalyzer", "AudioSupportModel", "SegmentationDetection", "ImageAnimator", "SupportModel", "SupportModelPipeline"]
+__all__ = ["EdgeDetector", "LineDetector", "DepthNormalDetector", "PoseDetector", "ControlImageProcessor", "Upscaler", "BackgroundRemover", "IPAdapter", "LanguageSupportModel", "Interpolator", "DragAnimator", "Unimatch", "FaceAnalyzer", "AudioSupportModel", "SegmentationDetection", "ImageAnimator", "SupportModel", "SupportModelPipeline"]

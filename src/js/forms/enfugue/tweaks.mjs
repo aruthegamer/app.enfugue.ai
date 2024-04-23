@@ -46,6 +46,39 @@ class TweaksFormView extends FormView {
                     "tooltip": "How closely to follow the text prompt; high values result in high-contrast images closely adhering to your text, low values result in low-contrast images with more randomness."
                 }
             },
+            "guidanceRescale": {
+                "label": "Guidance Rescale",
+                "class": FloatInputView,
+                "config": {
+                    "min": 0.0,
+                    "max": 100.0,
+                    "value": 0.0,
+                    "step": 0.01,
+                    "tooltip": "How much to rescale the guidance scale over time. A value of 0.0 means no rescaling. When using rescaling, scheduler betas will be rescaled to have zero terminal signal-to-noise ratio."
+                }
+            },
+            "perturbedGuidanceScale": {
+                "label": "Perturbed Self-Attention Guidance Scale",
+                "class": FloatInputView,
+                "config": {
+                    "min": 0.0,
+                    "max": 100.0,
+                    "value": 0.0,
+                    "step": 0.01,
+                    "tooltip": "Perturbed self-attention guidance operates as an additional forward pass, either instead of on top of the normal classifier-free guidance pass. A value of zero represents no PAG."
+                }
+            },
+            "perturbedAdaptiveGuidanceScale": {
+                "label": "Perturbed Self-Attention Guidance Adaptive Scale",
+                "class": FloatInputView,
+                "config": {
+                    "min": 0.0,
+                    "max": 100.0,
+                    "value": 0.0,
+                    "step": 0.01,
+                    "tooltip": "When using PAG, this value will reduce the adaptive guidance scale over time. A value of zero represents no reduction."
+                }
+            },
             "inferenceSteps": {
                 "label": "Inference Steps",
                 "class": NumberInputView,
@@ -147,16 +180,18 @@ class TweaksFormView extends FormView {
                     "tooltip": "Adjusts the weight of secondary skipped features. The recommended starting value for this field is <strong>0.2</strong>."
                 }
             },
-            /*
-            "injectDpo": {
-                "label": "Inject DPO",
-                "class": CheckboxInputView,
+            "textEncoder": {
+                "label": "Text Encoder",
+                "class": SelectInputView,
                 "config": {
-                    "value": false,
-                    "tooltip": "When checked, DPO (Direct Preference Optimization) weight offsets will be injected into the UNet. DPO was trained by using a large dataset of images that were selected by humans for prompt alignment and overall quality. By adding their training to your active model, it can improve overall adherence to your text."
+                    "tooltip": "The text encoder to use for the model. CLIP is the default, but T5-XL can be used with ELLA for far more verbose prompting. Right now, only 1.5 suppors this.",
+                    "value": "clip",
+                    "options": {
+                        "CLIP": "CLIP",
+                        "T5-XL": "T5XL (ELLA)"
+                    }
                 }
             }
-            */
         }
     };
 

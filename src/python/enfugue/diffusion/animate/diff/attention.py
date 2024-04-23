@@ -260,6 +260,8 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
         use_lora_compatible_layers: bool = True,
         unet_use_cross_frame_attention = None,
         unet_use_temporal_attention = None,
+        norm_type: str = "layer_norm",
+        norm_elementwise_affine: bool = True,
     ):
         super().__init__()
         self.use_linear_projection = use_linear_projection
@@ -269,7 +271,13 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
 
         # Define input layers
         self.in_channels = in_channels
-        self.norm = torch.nn.GroupNorm(num_groups=norm_num_groups, num_channels=in_channels, eps=1e-6, affine=True)
+        self.norm = torch.nn.GroupNorm(
+            num_groups=norm_num_groups,
+            num_channels=in_channels,
+            eps=1e-6,
+            affine=True
+        )
+
         if use_linear_projection:
             proj_kwargs = {}
             if use_lora_compatible_layers:
@@ -306,6 +314,8 @@ class Transformer3DModel(ModelMixin, ConfigMixin):
                     use_lora_compatible_layers=use_lora_compatible_layers,
                     unet_use_cross_frame_attention=unet_use_cross_frame_attention,
                     unet_use_temporal_attention=unet_use_temporal_attention,
+                    norm_type=norm_type,
+                    norm_elementwise_affine=norm_elementwise_affine,
                 )
                 for d in range(num_layers)
             ]
@@ -555,7 +565,7 @@ class BasicTransformerBlock(nn.Module):
             self.fuser = GatedSelfAttentionDense(dim, cross_attention_dim, num_attention_heads, attention_head_dim, use_lora_compatible_layers)
 
         # let chunk size default to None
-        self._chunk_size = 32
+        self._chunk_size = 4
         self._chunk_dim = 0
 
     def set_chunk_feed_forward(self, chunk_size: Optional[int], dim: int):

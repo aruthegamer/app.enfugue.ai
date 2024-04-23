@@ -18,13 +18,14 @@ from enfugue.diffusion.util.torch_util.animation_util import (
     get_frame_views,
     get_frame_weight_sequence
 )
+from enfugue.diffusion.animate.diff.resnet import InflatedGroupNorm
+from enfugue.diffusion.animate.diff.attention_processor import PoseAdapterAttnProcessor
 
 def zero_module(module):
     # Zero out the parameters of a module and return it.
     for p in module.parameters():
         p.detach().zero_()
     return module
-
 
 @dataclass
 class TemporalTransformer3DModelOutput(BaseOutput):
@@ -63,11 +64,12 @@ class VanillaTemporalModule(nn.Module):
         attention_block_types              =( "Temporal_Self", "Temporal_Self" ),
         cross_frame_attention_mode         = None,
         temporal_position_encoding         = False,
-        temporal_position_encoding_max_len = 24,
+        temporal_position_encoding_max_len = 24, 
         temporal_attention_dim_div         = 1,
         attention_scale_multiplier         = 1.0,
         use_lora_compatible_layers         = True,
         zero_initialize                    = True,
+        use_inflated_groupnorm             = False
     ):
         super().__init__()
         
@@ -82,6 +84,7 @@ class VanillaTemporalModule(nn.Module):
             use_lora_compatible_layers=use_lora_compatible_layers,
             temporal_position_encoding=temporal_position_encoding,
             temporal_position_encoding_max_len=temporal_position_encoding_max_len,
+            use_inflated_groupnorm=use_inflated_groupnorm
         )
 
         #if zero_initialize:
@@ -123,7 +126,6 @@ class TemporalTransformer3DModel(nn.Module):
         in_channels,
         num_attention_heads,
         attention_head_dim,
-
         num_layers,
         attention_block_types              = ( "Temporal_Self", "Temporal_Self", ),        
         dropout                            = 0.0,
@@ -137,12 +139,19 @@ class TemporalTransformer3DModel(nn.Module):
         temporal_position_encoding         = False,
         temporal_position_encoding_max_len = 24,
         attention_scale_multiplier         = 1.0,
+        use_inflated_groupnorm             = False,
     ):
         super().__init__()
 
         inner_dim = num_attention_heads * attention_head_dim
 
-        self.norm = torch.nn.GroupNorm(num_groups=norm_num_groups, num_channels=in_channels, eps=1e-6, affine=True)
+        norm_cls = InflatedGroupNorm if use_inflated_groupnorm else torch.nn.GroupNorm
+        self.norm = norm_cls(
+            num_groups=norm_num_groups,
+            num_channels=in_channels,
+            affine=True,
+            eps=1e-6,
+        )
         if use_lora_compatible_layers:
             self.proj_in = LoRACompatibleLinear(in_channels, inner_dim)
             self.proj_out = LoRACompatibleLinear(inner_dim, in_channels)
@@ -188,6 +197,7 @@ class TemporalTransformer3DModel(nn.Module):
         motion_attention_mask=None,
         frame_window_size=None,
         frame_window_stride=None,
+        cross_attention_kwargs={}
     ):
         assert hidden_states.dim() == 5, f"Expected hidden_states to have ndim=5, but got ndim={hidden_states.dim()}."
         video_length = hidden_states.shape[2]
@@ -209,7 +219,8 @@ class TemporalTransformer3DModel(nn.Module):
                 video_length=video_length,
                 motion_attention_mask=motion_attention_mask,
                 frame_window_size=frame_window_size,
-                frame_window_stride=frame_window_stride
+                frame_window_stride=frame_window_stride,
+                cross_attention_kwargs=cross_attention_kwargs
             )
 
         # output
@@ -248,8 +259,7 @@ class TemporalTransformerBlock(nn.Module):
             attention_blocks.append(
                 VersatileAttention(
                     attention_mode=block_name.split("_")[0],
-                    cross_attention_dim=cross_attention_dim if block_name.endswith("_Cross") else None,
-                    
+                    cross_attention_dim=cross_attention_dim if block_name in ["Temporal_Cross", "Temporal_Pose_Adapter"] else None,
                     query_dim=dim,
                     heads=num_attention_heads,
                     dim_head=attention_head_dim,
@@ -287,6 +297,7 @@ class TemporalTransformerBlock(nn.Module):
         motion_attention_mask=None,
         frame_window_size=None,
         frame_window_stride=None,
+        cross_attention_kwargs={}
     ):
         if frame_window_size and frame_window_stride:
             views = get_frame_views(video_length, frame_window_size, frame_window_stride)
@@ -305,6 +316,7 @@ class TemporalTransformerBlock(nn.Module):
                         norm_hidden_states,
                         encoder_hidden_states=encoder_hidden_states if attention_block.is_cross_attention else None,
                         video_length=t_end-t_start,
+                        **cross_attention_kwargs
                     ) + sub_hidden_states
                 sub_hidden_states = rearrange(sub_hidden_states, "(b f) d c -> b f d c", f=t_end-t_start)
 
@@ -321,6 +333,7 @@ class TemporalTransformerBlock(nn.Module):
                     encoder_hidden_states=encoder_hidden_states if attention_block.is_cross_attention else None,
                     video_length=video_length,
                     motion_attention_mask=motion_attention_mask,
+                    **cross_attention_kwargs
                 ) + hidden_states
 
         if frame_window_size:
@@ -411,7 +424,8 @@ class VersatileAttention(Attention):
         encoder_hidden_states=None,
         attention_mask=None,
         video_length=None,
-        motion_attention_mask=None
+        motion_attention_mask=None,
+        **cross_attention_kwargs
     ):
         batch_size, sequence_length, _ = hidden_states.shape
 
@@ -425,6 +439,31 @@ class VersatileAttention(Attention):
             encoder_hidden_states = repeat(encoder_hidden_states, "b n c -> (b d) n c", d=d) if encoder_hidden_states is not None else encoder_hidden_states
         else:
             raise NotImplementedError
+
+        if "pose_feature" in cross_attention_kwargs:
+            pose_feature = cross_attention_kwargs["pose_feature"]
+            if pose_feature.ndim == 5:
+                pose_feature = rearrange(pose_feature, "b c f h w -> (b h w) f c")
+            else:
+                assert pose_feature.ndim == 3
+            cross_attention_kwargs["pose_feature"] = pose_feature
+
+            if isinstance(self.processor, PoseAdapterAttnProcessor):
+                return self.processor(
+                    self,
+                    hidden_states,
+                    cross_attention_kwargs.pop("pose_feature"),
+                    encoder_hidden_states=None,
+                    attention_mask=attention_mask,
+                    **cross_attention_kwargs
+                )
+            return self.processor(
+                self,
+                hidden_states,
+                encoder_hidden_states=None,
+                attention_mask=attention_mask,
+                **cross_attention_kwargs
+            )
 
         encoder_hidden_states = encoder_hidden_states
 

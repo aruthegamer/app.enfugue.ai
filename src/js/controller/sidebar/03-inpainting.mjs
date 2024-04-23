@@ -31,7 +31,8 @@ class InpaintingController extends Controller {
                     "outpaint": true,
                     "inpaint": false,
                     "cropInpaint": true,
-                    "inpaintFeather": 32
+                    "inpaintFeather": 32,
+                    "inpaintUpscale": 0.0
                 }
             }
         };
@@ -199,6 +200,7 @@ class InpaintingController extends Controller {
             this.engine.outpaint = values.outpaint;
             this.engine.cropInpaint = values.cropInpaint;
             this.engine.inpaintFeather = values.inpaintFeather;
+            this.engine.inpaintUpscale = values.inpaintUpscale;
         });
 
         this.subscribe("engineWidthChange", (newWidth) => this.resize(newWidth));

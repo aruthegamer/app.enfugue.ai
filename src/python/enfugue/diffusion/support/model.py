@@ -93,6 +93,22 @@ class SupportModel:
         self.offline = offline
         self.kwargs = kwargs
 
+    @classmethod
+    def clone(cls, other: SupportModel) -> SupportModel:
+        """
+        Clones a model from another model.
+        """
+        result = cls(
+            other.root_dir,
+            other.model_dir,
+            other.device,
+            other.dtype,
+            other.offline,
+            **other.kwargs
+        )
+        result.task_callback = other.task_callback
+        return result
+
     def get_pipeline(self, context_name: str, *args: Any, **kwargs: Any) -> SupportModelPipeline:
         """
         Gets a pipeline by name.

@@ -137,6 +137,7 @@ class DiffusionPipelineManager:
     _animator_pipeline: EnfugueAnimateStableDiffusionPipeline
     _task_callback: Optional[Callable[[str], None]] = None
     _ip_adapter_model: Optional[IP_ADAPTER_LITERAL] = None
+    _text_encoder_model: Optional[TEXT_ENCODER_LITERAL] = None
 
     def __init__(
         self,
@@ -252,8 +253,11 @@ class DiffusionPipelineManager:
         # Login
         hf_token = self.configuration.get("enfugue.token.huggingface", None)
         if hf_token:
-            logger.critical("Logging into huggingface hub.")
-            huggingface_hub.login(token=hf_token)
+            logger.info("Logging into huggingface hub using configured token.")
+            try:
+                huggingface_hub.login(token=hf_token)
+            except Exception as e:
+                logger.error(f"Failed to log into huggingface hub: {e}")
 
         huggingface_http_get = huggingface_hub.file_download.http_get
 
@@ -3470,9 +3474,10 @@ class DiffusionPipelineManager:
                 "ip_adapter": self.ip_adapter,
                 "task_callback": getattr(self, "_task_callback", None),
                 "vae": self.vae,
-                "vae_preview": self.get_vae_preview(self.is_sdxl)
+                "vae_preview": self.get_vae_preview(self.is_sdxl),
+                "text_encoder_model": self._text_encoder_model,
             }
-            
+
             if self.use_tensorrt:
                 if self.is_sdxl:
                     raise ValueError(f"Sorry, TensorRT is not yet supported for SDXL.")
@@ -3584,6 +3589,10 @@ class DiffusionPipelineManager:
                 for inversion in self.inversion:
                     self.task_callback(f"Adding textual inversion {os.path.basename(inversion)} to pipeline")
                     pipeline.load_textual_inversion(inversion)
+            # load ELLA
+            if getattr(self, "_text_encoder_model", None) is not None and self._text_encoder_model.startswith("T5"):
+                self.task_callback(f"Loading ELLA {os.path.basename(self._text_encoder_model)}")
+                pipeline.ella = self.get_ella(self.is_sdxl, self._text_encoder_model)
             # load scheduler
             if self.scheduler is not None:
                 logger.debug(f"Setting scheduler to {self.scheduler.__name__}") # type: ignore[attr-defined]
@@ -3797,7 +3806,7 @@ class DiffusionPipelineManager:
                 if not os.path.exists(target_checkpoint_path):
                     if self.create_inpainter:
                         logger.info(f"Creating inpainting checkpoint from {self.model}")
-                        self.task_callback("Creating inpainter from {self.model}")
+                        self.task_callback(f"Creating inpainter from {self.model}")
                         self.create_inpainting_checkpoint(
                             self.model,
                             target_checkpoint_path,
@@ -3827,7 +3836,8 @@ class DiffusionPipelineManager:
                 "task_callback": getattr(self, "_task_callback", None),
                 "is_inpainter": True,
                 "vae_preview": self.get_vae_preview(self.inpainter_is_sdxl),
-                "vae": self.inpainter_vae
+                "vae": self.inpainter_vae,
+                "text_encoder_model": self._text_encoder_model,
             }
 
             if self.inpainter_use_tensorrt:
@@ -3938,6 +3948,10 @@ class DiffusionPipelineManager:
                 for inversion in self.inversion:
                     self.task_callback(f"Adding textual inversion {os.path.basename(inversion)} to inpainter pipeline")
                     inpainter_pipeline.load_textual_inversion(inversion)
+            # load ELLA
+            if getattr(self, "_text_encoder_model", None) is not None and self._text_encoder_model.startswith("T5"):
+                self.task_callback(f"Loading ELLA {os.path.basename(self._text_encoder_model)}")
+                inpainter_pipeline.ella = self.get_ella(self.inpainter_is_sdxl, self._text_encoder_model)
             # load scheduler
             if self.scheduler is not None:
                 logger.debug(f"Setting inpainter scheduler to {self.scheduler.__name__}") # type: ignore[attr-defined]
@@ -4012,7 +4026,8 @@ class DiffusionPipelineManager:
                 "position_encoding_truncate_length": self.position_encoding_truncate_length,
                 "position_encoding_scale_length": self.position_encoding_scale_length,
                 "vae_preview": self.get_vae_preview(self.animator_is_sdxl),
-                "vae": self.inpainter_vae
+                "vae": self.inpainter_vae,
+                "text_encoder_model": self._text_encoder_model,
             }
 
             if self.animator_use_tensorrt:
@@ -4119,6 +4134,10 @@ class DiffusionPipelineManager:
                 for inversion in self.inversion:
                     self.task_callback(f"Adding textual inversion {os.path.basename(inversion)} to animator pipeline")
                     animator_pipeline.load_textual_inversion(inversion)
+            # load ELLA
+            if getattr(self, "_text_encoder_model", None) is not None and self._text_encoder_model.startswith("T5"):
+                self.task_callback(f"Loading ELLA {os.path.basename(self._text_encoder_model)}")
+                animator_pipeline.ella = self.get_ella(self.animator_is_sdxl, self._text_encoder_model)
             # load scheduler
             if self.scheduler is not None:
                 logger.debug(f"Setting animator scheduler to {self.scheduler.__name__}") # type: ignore [attr-defined]
@@ -4714,7 +4733,7 @@ class DiffusionPipelineManager:
         if not scheduler:
             return None
         elif scheduler in ["dpmsm", "dpmsms", "dpmsmk", "dpmsmka"]:
-            from diffusers.schedulers import DPMSolverMultistepScheduler
+            from enfugue.diffusion.schedulers import DPMSolverMultistepScheduler
             if scheduler in ["dpmsms", "dpmsmka"]:
                 kwargs["algorithm_type"] = "sde-dpmsolver++"
             if scheduler in ["dpmsmk", "dpmsmka"]:
@@ -4772,6 +4791,9 @@ class DiffusionPipelineManager:
         elif scheduler == "lcm":
             from diffusers.schedulers import LCMScheduler
             return LCMScheduler
+        elif scheduler == "tcd":
+            from enfugue.diffusion.tcd import TCDScheduler
+            return TCDScheduler
         raise ValueError(f"Unknown scheduler {scheduler}")
 
     def get_svd_pipeline(self, use_xt: bool = True) -> StableVideoDiffusionPipeline:
@@ -5220,6 +5242,25 @@ class DiffusionPipelineManager:
         """
         return getattr(self, "_refiner_controlnet_names", set())
 
+    def get_ella(self, is_sdxl: bool, text_encoder_model: str) -> ELLA:
+        """
+        Gets a version of ELLA.
+        """
+        if is_sdxl:
+            raise ValueError("Sorry, ELLA is not yet supported by SDXL. Check back soon!")
+        if text_encoder_model != "T5-XL":
+            raise ValueError(f"Unknown text encoder model {text_encoder_model}")
+        from enfugue.diffusion.support.ella import ELLA, ELLA_T5XL_DEFAULT_PATH
+        from enfugue.diffusion.util import inject_state_dict
+        ella = ELLA()
+        inject_state_dict(
+            self.check_download_model(self.engine_other_dir, ELLA_T5XL_DEFAULT_PATH),
+            ella,
+            device=self.device,
+            dtype=self.dtype
+        )
+        return ella
+
     def dragnuwa_img2vid(
         self,
         image: Union[str, PIL.Image.Image],
@@ -5506,7 +5547,7 @@ class DiffusionPipelineManager:
         Will switch between inpainting and non-inpainting models
         """
         if task_callback is None:
-            task_callback = lambda arg: None
+            task_callback = lambda arg: logger.debug(f"{arg}")
 
         self.set_task_callback(task_callback)
 
@@ -5517,6 +5558,8 @@ class DiffusionPipelineManager:
             self._ip_adapter_model = requested_ip_adapter
         else:
             self._ip_adapter_model = None
+
+        self._text_encoder_model = kwargs.pop("text_encoder_model", None)
 
         latent_callback = noop
         will_refine = (refiner_strength != 0 or (refiner_start != 0 and refiner_start != 1)) and self.refiner is not None
@@ -5603,12 +5646,14 @@ class DiffusionPipelineManager:
                     self.tensorrt_is_enabled = False
                 else:
                     self.tenssort_is_enabled = True
-                
+
                 # Check IP adapter for TensorRT
                 if self._ip_adapter_model is not None:
                     logger.info(f"IP adapter requested, TensorRT is not compatible, disabling.")
                     self.tensorrt_is_enabled = False
-
+                if self._text_encoder_model is not None:
+                    logger.info(f"Text encoder requested, TensorRT is not compatible, disabling.")
+                    self.tensorrt_is_enabled = False
                 if animating:
                     if not self.has_animator:
                         logger.debug(f"Animation requested but no animator set, setting animator to the same as the base model")
@@ -5628,6 +5673,12 @@ class DiffusionPipelineManager:
                                 self.unload_animator("enabling IP adapter")
                             elif self.ip_adapter.model != self._ip_adapter_model:
                                 self.unload_animator("changing IP adapter model")
+                    if hasattr(self, "_animator_pipeline"):
+                        if not self._text_encoder_model or self._text_encoder_model == "CLIP":
+                            if self._animator_pipeline.ella_is_loaded:
+                                self.unload_animator("disabling ELLA")
+                        elif not self._animator_pipeline.ella_is_loaded:
+                            self.unload_animator("enabling ELLA")
 
                     pipe = self.animator_pipeline
                     if self.reload_motion_module and self.motion_module is not None:
@@ -5661,6 +5712,12 @@ class DiffusionPipelineManager:
                                 self.unload_inpainter("enabling IP adapter")
                             elif self.ip_adapter.model != self._ip_adapter_model:
                                 self.unload_inpainter("changing IP adapter model")
+                    if hasattr(self, "_inpainter_pipeline"):
+                        if not self._text_encoder_model or self._text_encoder_model == "CLIP":
+                            if self._inpainter_pipeline.ella_is_loaded:
+                                self.unload_inpainter("disabling ELLA")
+                        elif not self._inpainter_pipeline.ella_is_loaded:
+                            self.unload_inpainter("enabling ELLA")
                     pipe = self.inpainter_pipeline # type: ignore
                 else:
                     if inpainting:
@@ -5678,6 +5735,12 @@ class DiffusionPipelineManager:
                                 self.unload_pipeline("enabling IP adapter", False)
                             elif self.ip_adapter.model != self._ip_adapter_model:
                                 self.unload_pipeline("changing IP adapter model", False)
+                    if hasattr(self, "_pipeline"):
+                        if not self._text_encoder_model or self._text_encoder_model == "CLIP":
+                            if self._pipeline.ella_is_loaded:
+                                self.unload_pipeline("disabling ELLA")
+                        elif not self._pipeline.ella_is_loaded:
+                            self.unload_pipeline("enabling ELLA")
 
                     pipe = self.pipeline # type: ignore
 

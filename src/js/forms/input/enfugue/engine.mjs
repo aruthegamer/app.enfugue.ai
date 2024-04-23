@@ -92,7 +92,8 @@ class SchedulerInputView extends SelectInputView {
         "eds": "Euler Discrete Scheduler",
         "edsk": "Euler Discrete Scheduler Karras",
         "eads": "Euler Ancestral Discrete Scheduler",
-        "lcm": "LCM Scheduler"
+        "lcm": "LCM Scheduler",
+        "tcd": "TCD Scheduler",
     };
 
     /**

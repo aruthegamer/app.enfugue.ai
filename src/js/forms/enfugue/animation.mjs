@@ -167,6 +167,14 @@ class AnimationFormView extends FormView {
                     "step": 1,
                     "tooltip": "The number of times to perform denoising. If this number is greater than one, a process called ablation occurs, whereby the animation is re-noised and then calculated again using position data from the first generation. This can greatly improve consistency of the final animation at a large cost to inference time.<br/><br/><strong>Note:</strong> not all schedulers are supported when this is enabled. DDIM is recommended."
                 }
+            },
+            "animationFreeNoiseWindowing": {
+                "label": "Use FreeNoise Windowing",
+                "class": CheckboxInputView,
+                "config": {
+                    "tooltip": "FreeNoise context windowing uses a sliding window during the motion transformer phase to improve the quality of any animation longer than 16 frames. This windowing method requires more VRAM and may not work with all schedulers.",
+                    "value": false
+                }
             }
         },
         "Stable Video Diffusion": {

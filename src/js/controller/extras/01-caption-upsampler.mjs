@@ -153,7 +153,7 @@ class CaptionUpsamplerController extends MenuController {
     /**
      * @var int height of the input window
      */
-    static captionUpsampleWindowHeight = 505;
+    static captionUpsampleWindowHeight = 675;
 
     /**
      * @var int width of the conversation window

@@ -61,52 +61,62 @@ def check_download(
     If it does, checks the size and matches against the remote URL.
     If it doesn't, or the size doesn't match, download it.
     """
-    headers = {}
-    if authorization is not None:
-        headers["Authorization"] = authorization
-    if isinstance(target, str) and os.path.exists(target) and check_size and resume_size <= 0:
-        expected_length = requests.head(remote_url, headers=headers, allow_redirects=True).headers.get("Content-Length", None)
-        actual_length = os.path.getsize(target)
-        if expected_length and actual_length != int(expected_length):
-            logger.info(
-                f"File at {target} looks like an interrupted download, or the remote resource has changed - expected a size of {expected_length} bytes but got {actual_length} instead. Removing."
-            )
-            os.remove(target)
+    try:
+        headers = {}
+        if authorization is not None:
+            headers["Authorization"] = authorization
+        if isinstance(target, str) and os.path.exists(target) and check_size and resume_size <= 0:
+            head = requests.head(remote_url, headers=headers, allow_redirects=True)
+            head.raise_for_status()
+            expected_length = head.headers.get("Content-Length", None)
+            actual_length = os.path.getsize(target)
+            if expected_length and actual_length != int(expected_length):
+                logger.info(
+                    f"File at {target} looks like an interrupted download, or the remote resource has changed - expected a size of {expected_length} bytes but got {actual_length} instead. Removing."
+                )
+                os.remove(target)
 
-    if resume_size is not None:
-        headers["Range"] = f"bytes={resume_size:d}-"
+        if resume_size is not None:
+            headers["Range"] = f"bytes={resume_size:d}-"
 
-    if text_callback is not None:
-        progress_text_callback = get_download_text_callback(remote_url, text_callback)
-        original_progress_callback = progress_callback
+        if text_callback is not None:
+            progress_text_callback = get_download_text_callback(remote_url, text_callback)
+            original_progress_callback = progress_callback
 
-        def new_progress_callback(written: int, total: int) -> None:
-            progress_text_callback(written, total)
-            if original_progress_callback is not None:
-                original_progress_callback(written, total)
+            def new_progress_callback(written: int, total: int) -> None:
+                progress_text_callback(written, total)
+                if original_progress_callback is not None:
+                    original_progress_callback(written, total)
 
-        progress_callback = new_progress_callback
+            progress_callback = new_progress_callback
 
-    if not isinstance(target, str) or not os.path.exists(target):
-        @contextmanager
-        def get_write_handle() -> Iterator[BinaryIO]:
-            if isinstance(target, str):
-                with open(target, "wb") as handle:
-                    yield handle
-            else:
-                yield target
-        logger.info(f"Downloading file from {remote_url}. Will write to {target}")
-        response = requests.get(remote_url, allow_redirects=True, stream=True, headers=headers)
-        content_length: Optional[int] = response.headers.get("Content-Length", None) # type: ignore[assignment]
-        if content_length is not None:
-            content_length = int(content_length)
-        with get_write_handle() as fh:
-            written_bytes = 0
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                fh.write(chunk)
-                if progress_callback is not None and content_length is not None:
-                    written_bytes = min(written_bytes + chunk_size, content_length)
-                    progress_callback(written_bytes, content_length)
+        if not isinstance(target, str) or not os.path.exists(target):
+            @contextmanager
+            def get_write_handle() -> Iterator[BinaryIO]:
+                if isinstance(target, str):
+                    with open(target, "wb") as handle:
+                        yield handle
+                else:
+                    yield target
+            logger.info(f"Downloading file from {remote_url}. Will write to {target}")
+            response = requests.get(remote_url, allow_redirects=True, stream=True, headers=headers)
+            response.raise_for_status()
+            content_length: Optional[int] = response.headers.get("Content-Length", None) # type: ignore[assignment]
+            if content_length is not None:
+                content_length = int(content_length)
+            with get_write_handle() as fh:
+                written_bytes = 0
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    fh.write(chunk)
+                    if progress_callback is not None and content_length is not None:
+                        written_bytes = min(written_bytes + chunk_size, content_length)
+                        progress_callback(written_bytes, content_length)
+    except Exception as e:
+        logger.error(f"Received an error while downloading file from {remote_url}: {e}")
+        if os.path.exists(target):
+            logger.debug(f"File exists on-disk at {target}, falling back to that.")
+            return
+        raise
 
 def check_download_to_dir(
     remote_url: str,
