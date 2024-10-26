@@ -523,6 +523,23 @@ class InvocationController extends Controller {
         this.kwargs.ip_adapter_model = newModel;
     }
 
+    /** 
+     * @return bool Whether or not to use positional encoding in the IP adapter
+     */
+    get ipAdapterPositional() {
+        return this.kwargs.ip_adapter_positional || false;
+    }
+
+    /** 
+     * @param bool Whether or not to use positional encoding in the IP adapter
+     */
+    set ipAdapterPositional(newPositional) {
+        if (this.ipAdapterPositional !== newPositional) {
+            this.publish("engineIpAdapterPositionalChange", newPositional);
+        }
+        this.kwargs.ip_adapter_positional = newPositional;
+    }
+
     /**
      * @return str The text encoder model
      */

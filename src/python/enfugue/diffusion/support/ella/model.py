@@ -3,9 +3,10 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+
 from diffusers.models.embeddings import TimestepEmbedding, Timesteps
 from transformers import T5EncoderModel, T5Tokenizer
-
+from enfugue.util.log import logger
 
 class AdaLayerNorm(nn.Module):
     def __init__(self, embedding_dim: int, time_embedding_dim: Optional[int] = None):

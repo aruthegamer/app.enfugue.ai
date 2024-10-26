@@ -15,6 +15,9 @@ if TYPE_CHECKING:
 __all__ = ["Audio"]
 
 class Audio:
+    """
+    A class to handle audio frames
+    """
     def __init__(
         self,
         frames: Iterable[Tuple[float]],
@@ -22,6 +25,13 @@ class Audio:
     ) -> None:
         self.frames = reiterator(frames)
         self.rate = rate
+
+    @property
+    def frames_as_list(self) -> List[Tuple[float]]:
+        """
+        Returns the frames as a list
+        """
+        return [frame for frame in self.frames]
 
     def get_clip(
         self,

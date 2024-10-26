@@ -69,6 +69,7 @@ class LayeredInvocation:
     lycoris: Optional[Union[str, List[str], Tuple[str, float], List[Union[str, Tuple[str, float]]]]]=None
     inversion: Optional[Union[str, List[str]]]=None
     ip_adapter_model: Optional[IP_ADAPTER_LITERAL]=None
+    ip_adapter_positional: bool=False
     text_encoder_model: Optional[TEXT_ENCODER_LITERAL]=None
     safe: Optional[bool]=None
     scheduler: Optional[SCHEDULER_LITERAL]=None
@@ -504,6 +505,7 @@ class LayeredInvocation:
             "pag_scale": self.pag_scale,
             "pag_adaptive_scaling": self.pag_adaptive_scaling,
             "use_freenoise_windowing": self.use_freenoise_windowing,
+            "ip_adapter_positional": self.ip_adapter_positional,
         }
 
     def merge_prompts(self, *args: Tuple[Optional[str], float]) -> Optional[str]:

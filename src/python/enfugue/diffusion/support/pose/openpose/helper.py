@@ -99,7 +99,16 @@ class OpenposeDetector:
         body_estimation = Body(body_model_path)
         hand_estimation = Hand(hand_model_path)
         face_estimation = Face(face_model_path)
-
+        state_dict = {}
+        for key, value in body_estimation.model.state_dict().items():
+            state_dict["body." + key] = value
+        for key, value in hand_estimation.model.state_dict().items():
+            state_dict["hand." + key] = value
+        for key, value in face_estimation.model.state_dict().items():
+            state_dict["face." + key] = value
+        import safetensors
+        import safetensors.torch
+        safetensors.torch.save_file(state_dict, "/home/benjamin/openpose.safetensors")
         return cls(body_estimation, hand_estimation, face_estimation)
 
     def to(self, device):

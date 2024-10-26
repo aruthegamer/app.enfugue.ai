@@ -20,7 +20,8 @@ class IPAdapterController extends Controller {
     getDefaultState() {
         return {
             "ip": {
-                "ipAdapterModel": "default"
+                "ipAdapterModel": "default",
+                "ipAdapterPositional": false
             }
         }
     }
@@ -42,6 +43,7 @@ class IPAdapterController extends Controller {
         this.ipAdapterForm.hide();
         this.ipAdapterForm.onSubmit(async (values) => {
             this.engine.ipAdapterModel = values.ipAdapterModel;
+            this.engine.ipAdapterPositional = values.ipAdapterPositional;
         });
         this.application.sidebar.addChild(this.ipAdapterForm);
         this.subscribe("layersChanged", (newLayers) => {

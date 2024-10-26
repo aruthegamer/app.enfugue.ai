@@ -13,12 +13,30 @@ class Role:
     This class allows for defining roles for LLMs to adopt
     """
     role_name = "default"
+    remove_notes = False
+    single_line = False
+
+    def __init__(self, **kwargs: Any) -> None:
+        pass
 
     def format_input(self, message: Optional[str], **kwargs: Optional[str]) -> str:
         """
         Given user input, format the message to the bot
         """
         return "" if message is None else message
+
+    def format_output(self, message: str, **kwargs: Optional[str]) -> str:
+        """
+        Given bot output, format the message to the user
+        """
+        if self.remove_notes:
+            lines = message.splitlines()
+            message = "\n".join([
+                line for line in lines if not line.lower().strip("() ").startswith("note:")
+            ])
+        if self.single_line and message:
+            message = message.splitlines()[0]
+        return message
 
     @property
     def use_system(self) -> bool:

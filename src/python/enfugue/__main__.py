@@ -183,9 +183,14 @@ def dump_config(filename: Optional[str] = None, json: bool = False) -> None:
 @click.option("-k", "--top-k", help="The number of tokens to limit to when selecting the next token in a response.", default=50, show_default=True)
 @click.option("-p", "--top-p", help="The p-value of tokens to limit from when selecting the next token in a response.", default=0.95, show_default=True)
 @click.option("-f", "--forgetful", help="Enable 'forgetful' mode - i.e. refresh the conversation after each response.", is_flag=True, default=False)
+@click.option("-cl", "--context-length", help="The length of the context to use in the conversation.", default=0, show_default=True)
 @click.option("--gemma", help="Use the Gemma model.", is_flag=True, default=False)
 @click.option("--smaug", help="Use the Smaug model.", is_flag=True, default=False)
 @click.option("--luxia", help="Use the Luxia model.", is_flag=True, default=False)
+@click.option("--llama3", help="Use the Llama3 model.", is_flag=True, default=False)
+@click.option("--llama3-262k", help="Use the Llama3 262K model.", is_flag=True, default=False)
+@click.option("--llama3-1024k", help="Use the Llama3 1024K model.", is_flag=True, default=False)
+@click.option("--llama3-omost", help="Use the Llama3 omost model.", is_flag=True, default=False)
 @main.command(short_help="Starts a chat with an LLM.")
 def chat(
     config: Optional[str] = None,
@@ -198,10 +203,15 @@ def chat(
     temperature: float=0.7,
     top_k: int=50,
     top_p: float=0.95,
+    context_length: int=0,
     forgetful: bool = False,
     gemma: bool = False,
     smaug: bool = False,
-    luxia: bool = False
+    luxia: bool = False,
+    llama3: bool = False,
+    llama3_262k: bool = False,
+    llama3_1024k: bool = False,
+    llama3_omost: bool = False,
 ) -> None:
     """
     Runs an interactive chat in the command line.
@@ -213,9 +223,25 @@ def chat(
         debug=debug
     )
     from enfugue.diffusion.manager import DiffusionPipelineManager
+    from enfugue.discord.bots.puck.role import Puck, Titania
     manager = DiffusionPipelineManager(configuration)
-
-    model = "luxia" if luxia else "smaug" if smaug else "gemma" if gemma else "zephyr"
+    
+    if gemma:
+        model = "gemma"
+    elif smaug:
+        model = "smaug"
+    elif luxia:
+        model = "luxia"
+    elif llama3:
+        model = "llama3"
+    elif llama3_262k:
+        model = "llama3-262k"
+    elif llama3_1024k:
+        model = "llama3-1024k"
+    elif llama3_omost:
+        model = "llama3-omost"
+    else:
+        model = "zephyr"
 
     with get_context(debug):
         click.echo(termcolor.colored("Loading language model. Say 'reset' at any time to start the conversation over. Use Ctrl+D to exit or say 'exit.'", "yellow"))
@@ -229,7 +255,8 @@ def chat(
             temperature=temperature,
             top_k=top_k,
             top_p=top_p,
-            use_system=system != "none" and system != "null"
+            use_system=system != "none" and system != "null",
+            context_length=context_length
         ) as chat:
             try:
                 click.echo(termcolor.colored("[assistant] {0}".format(chat()), "cyan")) # First message
@@ -291,20 +318,37 @@ def run(
         click.echo("Goodbye!")
 
 @main.command(short_help="Runs the discord bot.")
-@click.argument("token")
 @click.option("-p", "--prefix", help="Sets the command prefix.", default="$", show_default=True)
+@click.option("-c", "--config", help="An optional path to a configuration file to use instead of the default.")
+@click.option("-m", "--merge", is_flag=True, default=False, help="When set, merge the passed configuration with the default configuration instead of replacing it.")
+@click.option("-o", "--overrides", help="an optional json object containing override configuration.")
+@click.option("-t", "--token", help="An optional token to use instead of the one in the configuration.")
 @click.option("-d", "--debug", help="Enable debug logging.", is_flag=True, default=False)
 def discord(
-    token: str,
+    config: Optional[str] = None,
+    token: Optional[str] = None,
+    merge: bool = False,
+    overrides: str = None,
     prefix: str = "$",
     debug: bool = False
 ) -> None:
     """
     Runs the discord bot.
     """
-    from enfugue.discord.bot import EnfugueDiscordBot
+    from enfugue.discord.bots import Puck
     with get_context(debug):
-        EnfugueDiscordBot.execute(token, command_prefix=prefix)
+        configuration = get_configuration(
+            config,
+            overrides=overrides,
+            merge=merge,
+            debug=debug
+        )
+        if token is None:
+            try:
+                token = configuration["enfugue"]["token"]["discord"]
+            except KeyError:
+                raise ConfigurationError("No Discord token found in configuration, please specify one with the --token option or use the configuration key 'enfugue.token.discord'.")
+        Puck.execute(token, configuration)
 
 @click.argument("file_path")
 @click.option("-d", "--debug", help="Enable debug logging.", is_flag=True, default=False)

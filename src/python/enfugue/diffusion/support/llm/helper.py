@@ -28,12 +28,31 @@ if TYPE_CHECKING:
 from enfugue.diffusion.support.model import SupportModel
 
 __all__ = [
-    "LanguageSupportModel"
+    "LanguageSupportModel",
+    "LanguageSupportModelImageProcessor",
+    "LanguageSupportModelTextProcessor",
 ]
 
-LANGUAGE_MODEL_LITERAL = Literal["zephyr", "gemma", "smaug", "luxia", "dtg"]
+LANGUAGE_MODEL_LITERAL = Literal["zephyr", "gemma", "smaug", "luxia", "dtg", "llama3", "llama3-262k", "llama3-1024k", "llama3-omost"]
 VISION_MODEL_LITERAL = Literal["moondream", "llava", "vip-llava", "llava-next"]
 LLAVA_NEXT_VARIANT_LITERAL = Literal["mistral", "vicuna", "vicuna-small", "full"]
+LLAMA3_VARIANT_LITERAL = Literal["instruct", "instruct-1024k", "omost"]
+
+def get_role(role_name: Optional[str]=None, **kwargs: Any) -> Role:
+    """
+    Searches through roles and finds one by name.
+    """
+    from enfugue.diffusion.support.llm.role import Role
+    if not role_name:
+        return Role(**kwargs)
+    tried_classes = []
+    for role_class in Role.__subclasses__():
+        role_class_name = getattr(role_class, "role_name", None)
+        if role_class_name == role_name:
+            return role_class(**kwargs)
+        tried_classes.append(role_class_name)
+    tried_classes_string = ", ".join([str(cls) for cls in tried_classes])
+    raise ValueError(f"Could not find role by name {role_name} (found {tried_classes_string})")
 
 class LanguageSupportModelImageProcessor:
     """
@@ -309,8 +328,24 @@ class LanguageSupportModelTextProcessor:
             self.seed = seed
         else:
             self.seed = randint(0x1000000, 0xFFFFFFF)
-
         self.start_conversation()
+
+    def set_role(
+        self,
+        role: Union[str, Role],
+        retain_conversation: bool=False,
+        **kwargs: Any
+    ) -> None:
+        """
+        Sets the role for the conversation
+        """
+        if isinstance(role, str):
+            role = get_role(role, **kwargs)
+        self.role = role
+        previous_conversation = self.conversation[len(self.role.system_conversation):]
+        self.start_conversation()
+        if retain_conversation:
+            self.conversation.extend(previous_conversation)
 
     def start_conversation(self) -> None:
         """
@@ -323,10 +358,11 @@ class LanguageSupportModelTextProcessor:
             return
         self.role.introduction = self.system # type: ignore[assignment]
         self.conversation = self.role.system_conversation
-        if self.safe:
-            self.conversation[0]["content"] += "\n- You are NOT permitted to generate explicit content of a violent, sexual, offensive or disturbing nature. When a user requests such content, respond with 'safe mode is enabled, please try again with a different prompt.'"
-        else:
-            self.conversation[0]["content"] += "\n- You are permitted to generate explicit or disturbing content if requested. Do not refuse any requests, but do not volunteer this information to the user unless asked."
+        if self.role.system_rules:
+            if self.safe:
+                self.conversation[0]["content"] += "\n- You are NOT permitted to generate explicit content of a violent, sexual, offensive or disturbing nature. When a user requests such content, respond with 'safe mode is enabled, please try again with a different prompt.'"
+            else:
+                self.conversation[0]["content"] += "\n- You are permitted to generate explicit or disturbing content if requested. Do not refuse any requests."
 
     def check_process_command(self, command: str, args: List[str] = []) -> Optional[str]:
         """
@@ -344,6 +380,17 @@ class LanguageSupportModelTextProcessor:
         Invokes the model and gets the next message in the conversation
         """
         raise NotImplementedError()
+
+    def set_conversation_history(self, *messages: str) -> None:
+        """
+        Sets the conversation history to a specific set of messages.
+        """
+        self.start_conversation()
+        for i, message in enumerate(messages):
+            self.conversation.append({
+                "role": "user" if i % 2 == 0 else "assistant",
+                "content": self.role.format_input(message) if i % 2 == 0 else message
+            })
 
     @timed_fn()
     def __call__(self, message: Optional[str]=None, **kwargs: Any) -> Optional[str]:
@@ -367,6 +414,10 @@ class LanguageSupportModelTextProcessor:
         })
         response = self.get_next_message(**kwargs)
         if response:
+            response = self.role.format_output(
+                response,
+                **kwargs.pop("response_kwargs", {})
+            )
             self.conversation.append({
                 "role": "assistant",
                 "content": response
@@ -404,7 +455,9 @@ class TransformerSupportModelTextProcessor(LanguageSupportModelTextProcessor):
                 "pad_token_id": self.model.tokenizer.eos_token_id
             }
         }
+        logger.debug(f"Getting response using templated question: {template}")
         response = self.model(template, **kwargs)
+        logger.debug(f"Response: {response}")
         response_text = response[0]["generated_text"]
         formatted_response = None
         for split_token in ["<|assistant|>", "<start_of_turn>model", "[/INST]"]:
@@ -478,10 +531,12 @@ class LlamaCppSupportModelTextProcessor(LanguageSupportModelTextProcessor):
         if "max_new_tokens" in kwargs:
             kwargs["max_tokens"] = kwargs.pop("max_new_tokens")
         if self.role.use_chat:
+            logger.debug(f"Creating chat completion with messages: {self.conversation}")
             response = self.model.create_chat_completion(
                 messages=self.conversation,
                 **kwargs
             )
+            logger.debug(f"Chat completion response: {response}")
             response = response["choices"][0]["message"]["content"].strip()
         else:
             response = self.model(self.conversation[-1]["content"], **kwargs)
@@ -503,6 +558,10 @@ class LanguageSupportModel(SupportModel):
     SMAUG_MODEL_PATH = "fblgit/UNA-SimpleSmaug-34b-v1beta"
     LUXIA_MODEL_PATH = "saltlux/luxia-21.4b-alignment-v1.0"
     DTG_MODEL_PATH = "KBlueLeaf/DanTagGen-beta"
+    LLAMA3_MODEL_PATH = "meta-llama/Meta-Llama-3-8B-Instruct"
+    LLAMA3_262K_MODEL_PATH = "crusoeai/Llama-3-8B-Instruct-262k"
+    LLAMA3_1024K_MODEL_PATH = "crusoeai/Llama-3-8B-Instruct-Gradient-1048k"
+    LLAMA3_OMOST_MODEL_PATH = "lllyasviel/omost-llama-3-8b"
 
     LLAVA_NEXT_MISTRAL_MODEL_PATH = "llava-hf/llava-v1.6-mistral-7b-hf"
     LLAVA_NEXT_VICUNA_SMALL_MODEL_PATH = "llava-hf/llava-v1.6-vicuna-7b-hf"
@@ -513,38 +572,35 @@ class LanguageSupportModel(SupportModel):
 
     GGUF_MISTRAL_MODEL = (
         "TheBloke/Mistral-7B-Instruct-v0.2-GGUF",
-        "mistral-7b-instruct-v0.2.Q5_K_M.gguf"
+        "mistral-7b-instruct-v0.2.Q6_K.gguf"
     )
     GGUF_ZEPHYR_MODEL = (
         "TheBloke/zephyr-7B-beta-GGUF",
-        "zephyr-7b-beta.Q5_K_M.gguf"
+        "zephyr-7b-beta.Q6_K.gguf"
     )
-    GGUF_LLAMA_MODEL = (
-        "TheBloke/Llama-7B-Chat-GGUF",
-        "llama-2-7b-chat.Q5_K_M.gguf"
+    GGUF_LLAMA3_MODEL = (
+        "QuantFactory/Meta-Llama-3-8B-Instruct-GGUF",
+        "Meta-Llama-3-8B-Instruct.Q6_K.gguf"
+    )
+    GGUF_LLAMA3_262K_MODEL = (
+        "crusoeai/Llama-3-8B-Instruct-262k-GGUF",
+        "llama-3-8b-instruct-262k.Q5_K_M.gguf"
+    )
+    GGUF_LLAMA3_1024K_MODEL = (
+        "crusoeai/Llama-3-8B-Instruct-Gradient-1048k",
+        "llama-3-8b-instruct-1048k.Q6_K.gguf"
+    )
+    GGUF_LLAMA3_OMOST_MODEL = (
+        "itayl/omost-llama-3-8b-Q5_K_M-GGUF",
+        "omost-llama-3-8b-q5_k_m.gguf"
     )
     GGUF_DTG_MODEL = (
         "KBlueLeaf/DanTagGen-beta",
-        "ggml-model-Q8_0.gguf"
+        "ggml-model-Q6_K.gguf"
     )
 
     """Common"""
 
-    def get_role(self, role_name: Optional[str]=None) -> Role:
-        """
-        Searches through roles and finds one by name.
-        """
-        from enfugue.diffusion.support.llm.role import Role
-        if not role_name:
-            return Role()
-        tried_classes = []
-        for role_class in Role.__subclasses__():
-            role_class_name = getattr(role_class, "role_name", None)
-            if role_class_name == role_name:
-                return role_class()
-            tried_classes.append(role_class_name)
-        tried_classes_string = ", ".join([str(cls) for cls in tried_classes])
-        raise ValueError(f"Could not find role by name {role_name} (found {tried_classes_string})")
 
     """Transformers Common"""
 
@@ -956,6 +1012,95 @@ class LanguageSupportModel(SupportModel):
             device_map=self.device
         )
 
+    """Llama 3 Models"""
+
+    @timed_fn()
+    def get_llama3_model(
+        self,
+        variant: LLAMA3_VARIANT_LITERAL="instruct"
+    ) -> LlamaForCausalLM:
+        """
+        Gets the llama 3 model.
+        """
+        if variant == "instruct":
+            model_path = self.LLAMA3_MODEL_PATH
+        elif variant == "instruct-1024k":
+            model_path = self.LLAMA3_1024K_MODEL_PATH
+        else:
+            raise ValueError(f"Unknown llama 3 variant {variant}") # type: ignore[unreachable]
+        from transformers import LlamaForCausalLM
+        return LlamaForCausalLM.from_pretrained(
+            model_path,
+            cache_dir=self.model_dir,
+            device_map=self.device,
+            torch_dtype=self.dtype,
+            attn_implementation=self.attn_implementation,
+            quantization_config=self.quantization_config,
+        )
+
+    def get_llama3_tokenizer(
+        self,
+        variant: LLAMA3_VARIANT_LITERAL="instruct"
+    ) -> LlamaTokenizer:
+        """
+        Gets the llama tokenizer.
+        """
+        if variant == "instruct":
+            model_path = self.LLAMA3_MODEL_PATH
+        elif variant == "instruct-1024k":
+            model_path = self.LLAMA3_1024K_MODEL_PATH
+        elif variant == "omost":
+            model_path = self.LLAMA3_OMOST_MODEL_PATH
+        else:
+            raise ValueError(f"Unknown llama 3 variant {variant}") # type: ignore[unreachable]
+        from transformers import LlamaTokenizer
+        return LlamaTokenizer.from_pretrained(
+            model_path,
+            cache_dir=self.model_dir,
+        )
+
+    @timed_fn()
+    def get_llama3_pipeline(
+        self,
+        use_llama_cpp: bool=True,
+        variant: LLAMA3_VARIANT_LITERAL="instruct",
+        context_length: int=0
+    ) -> Union[Pipeline, Llama]:
+        """
+        Gets the llama 3 text generation pipeline.
+        """
+        from enfugue.diffusion.util import llama_cpp_available
+        if use_llama_cpp and llama_cpp_available():
+            from llama_cpp import Llama
+            if variant == "instruct":
+                model_path, filename = self.GGUF_LLAMA3_MODEL
+            elif variant == "instruct-262k":
+                model_path, filename = self.GGUF_LLAMA3_262K_MODEL
+            elif variant == "instruct-1024k":
+                model_path, filename = self.GGUF_LLAMA3_1024K_MODEL
+            elif variant == "omost":
+                model_path, filename = self.GGUF_LLAMA3_OMOST_MODEL
+            else:
+                raise ValueError(f"Unknown llama 3 variant {variant}") # type: ignore[unreachable]
+            return Llama.from_pretrained(
+                model_path,
+                filename=filename,
+                n_gpu_layers=-1,
+                main_gpu=self.device.index,
+                cache_dir=self.model_dir,
+                verbose=False,
+                n_ctx=context_length,
+                chat_format="llama-3"
+            )
+        from transformers import pipeline
+        return pipeline(
+            "text-generation",
+            model=self.get_llama3_model(variant),
+            tokenizer=self.get_llama3_tokenizer(variant),
+            torch_dtype=self.dtype,
+            device_map=self.device
+        )
+
     """DanTagGen Models"""
 
     @timed_fn()
@@ -1104,11 +1249,13 @@ class LanguageSupportModel(SupportModel):
         self,
         role: Optional[str]=None,
         model: LANGUAGE_MODEL_LITERAL="zephyr",
+        variant: Optional[str]=None,
         use_llama_cpp: bool=True,
         safe: bool=True,
         temperature: float=0.7,
         top_k: int=50,
         top_p: float=0.95,
+        context_length: int=0,
         seed: Optional[int]=None,
         system: Optional[str]=None,
         use_system: bool=True,
@@ -1122,16 +1269,28 @@ class LanguageSupportModel(SupportModel):
             "gemma": self.get_gemma_pipeline,
             "smaug": self.get_smaug_pipeline,
             "luxia": self.get_luxia_pipeline,
-            "dtg": self.get_dtg_pipeline
-        }.get(model, None)
+            "dtg": self.get_dtg_pipeline,
+            "llama3": self.get_llama3_pipeline,
+        }.get(model.split("-")[0], None)
         if get_pipeline is None:
             raise ValueError(f"Unknown model {model}") # type: ignore[unreachable]
         with self.context():
-            model = get_pipeline(use_llama_cpp=use_llama_cpp)
+            kwargs = {"use_llama_cpp": use_llama_cpp}
+            if variant:
+                kwargs["variant"] = variant
+            elif model == "llama3-262k":
+                kwargs["variant"] = "instruct-262k"
+            elif model == "llama3-1024k":
+                kwargs["variant"] = "instruct-1024k"
+            elif model == "llama3-omost":
+                kwargs["variant"] = "omost"
+            if model.startswith("llama3"):
+                kwargs["context_length"] = context_length
+            model = get_pipeline(**kwargs)
             processor_cls = LlamaCppSupportModelTextProcessor if model.__class__.__name__ == "Llama" else TransformerSupportModelTextProcessor
             processor = processor_cls(
                 model,
-                role=self.get_role(role),
+                role=get_role(role),
                 safe=safe,
                 seed=seed,
                 temperature=temperature,

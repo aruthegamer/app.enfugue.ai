@@ -15,9 +15,9 @@ def HWC3(x):
     assert C == 1 or C == 3 or C == 4
     if C == 3:
         return x
-    if C == 1:
+    elif C == 1:
         return np.concatenate([x, x, x], axis=2)
-    if C == 4:
+    else:
         color = x[:, :, 0:3].astype(np.float32)
         alpha = x[:, :, 3:4].astype(np.float32) / 255.0
         y = color * alpha + 255.0 * (1.0 - alpha)

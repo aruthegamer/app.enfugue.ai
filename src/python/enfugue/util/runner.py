@@ -49,6 +49,7 @@ class EnfugueServerRunner:
         Runs the servers (blocking)
         """
         from enfugue.server import EnfugueServer
+        # from enfugue.puck import PuckInterfaceServer as EnfugueServer
         # Determine how many servers we need to run
         try:
             all_host = self.configuration["server"]["host"]

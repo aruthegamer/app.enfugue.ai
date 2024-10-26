@@ -1395,6 +1395,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
             for tokenizer, text_encoder, prompt in zip(tokenizers, text_encoders, prompts):
                 if tokenizer is None or text_encoder is None:
                     continue
+
                 text_encoder.to(device, dtype=dtype)
                 if isinstance(text_encoder, T5EncoderModel):
                     text_inputs = tokenizer(
@@ -1406,7 +1407,12 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                         text_inputs.input_ids.to(device),
                         text_inputs.attention_mask.to(device)
                     ).last_hidden_state
+
                     self.flexible_lengths = [prompt_embeds.size(1)] * num_results_per_prompt
+                    bs_embed, seq_len, _ = prompt_embeds.shape  # type: ignore
+                    # duplicate text embeddings for each generation per prompt, using mps friendly method
+                    prompt_embeds = prompt_embeds.repeat(1, num_results_per_prompt, 1)  # type: ignore
+                    prompt_embeds = prompt_embeds.view(bs_embed * num_results_per_prompt, seq_len, -1)
                 else:
                     if self.is_sdxl or self.is_stable_cascade:
                         return_type = ReturnedEmbeddingsType.PENULTIMATE_HIDDEN_STATES_NON_NORMALIZED
@@ -1461,9 +1467,15 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                         negative_text_inputs.input_ids.to(device),
                         negative_text_inputs.attention_mask.to(device)
                     ).last_hidden_state
-                    self.flexible_lengths = [negative_prompt_embeds.size(1)] * num_results_per_prompt + [prompt_embeds.size(1)] * num_results_per_prompt
+
+                    p_seq_len = prompt_embeds.size(1)
+                    n_seq_len = negative_prompt_embeds.size(1)
+                    max_length = max(p_seq_len, n_seq_len)
+
+                    self.flexible_lengths = [n_seq_len] * num_results_per_prompt + [p_seq_len] * num_results_per_prompt
+                    negative_prompt_embeds = negative_prompt_embeds.repeat(1, num_results_per_prompt, 1)
+                    negative_prompt_embeds = negative_prompt_embeds.view(num_results_per_prompt, n_seq_len, -1)
                     # Pad positive and negative to same length
-                    max_length = max([prompt_embeds.size(1), negative_prompt_embeds.size(1)])
                     b, _, d = prompt_embeds.shape
                     prompt_embeds = torch.cat([
                         prompt_embeds,
@@ -1487,14 +1499,14 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                     else:
                         negative_prompt_embeds = compel([negative_prompt or ""])
 
+                    negative_prompt_embeds = negative_prompt_embeds.repeat(1, num_results_per_prompt, 1)
+                    negative_prompt_embeds = negative_prompt_embeds.view(num_results_per_prompt, seq_len, -1)
+
                 if do_classifier_free_guidance:
                     # duplicate unconditional embeddings for each generation per prompt, using mps friendly method
                     seq_len = negative_prompt_embeds.shape[1]  # type: ignore
 
                     negative_prompt_embeds = negative_prompt_embeds.to(dtype=text_encoder.dtype, device=device)  # type: ignore
-
-                    negative_prompt_embeds = negative_prompt_embeds.repeat(1, num_results_per_prompt, 1)
-                    negative_prompt_embeds = negative_prompt_embeds.view(num_results_per_prompt, seq_len, -1)
 
                     # For classifier free guidance, we need to do two forward passes.
                     # Here we concatenate the unconditional and text embeddings into a single batch
@@ -2615,25 +2627,27 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
             replace_processor = PAGIdentitySelfAttnProcessor()
 
         for layer in self.applied_adversarial_guidance_layers:
-            layer.replaced_processor = layer.processor
-            if do_classifier_free_guidance:
-                if isinstance(layer.processor, torch.nn.Module):
-                    layer.processor = PAGCFGIdentitySelfAttnProcessorModule()
+            if hasattr(layer, "processor"):
+                layer.replaced_processor = layer.processor
+                if do_classifier_free_guidance:
+                    if isinstance(layer.processor, torch.nn.Module):
+                        layer.processor = PAGCFGIdentitySelfAttnProcessorModule()
+                    else:
+                        layer.processor = PAGCFGIdentitySelfAttnProcessor()
                 else:
-                    layer.processor = PAGCFGIdentitySelfAttnProcessor()
-            else:
-                if isinstance(layer.processor, torch.nn.Module):
-                    layer.processor = PAGIdentitySelfAttnProcessorModule()
-                else:
-                    layer.processor = PAGIdentitySelfAttnProcessor()
+                    if isinstance(layer.processor, torch.nn.Module):
+                        layer.processor = PAGIdentitySelfAttnProcessorModule()
+                    else:
+                        layer.processor = PAGIdentitySelfAttnProcessor()
 
     def maybe_remove_adversarial_guidance(self) -> None:
         """
         Removes adversarial guidance from any previously applied layers.
         """
         for layer in self.applied_adversarial_guidance_layers:
-            layer.processor = layer.replaced_processor
-            del layer.replaced_processor
+            if hasattr(layer, "replaced_processor"):
+                layer.processor = layer.replaced_processor
+                del layer.replaced_processor
         self.applied_adversarial_guidance_layers = []
 
     def get_controlnet_conditioning_blocks(
@@ -2657,6 +2671,8 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
             # Remove duplicate of prompt embeds and latents
             latents = torch.cat(latents.chunk(3)[:2])
             encoder_hidden_states = torch.cat(encoder_hidden_states.chunk(3)[:2])
+            if added_cond_kwargs:
+                added_cond_kwargs = {k: torch.cat(v.chunk(3)[:2]) for k, v in added_cond_kwargs.items()}
 
         is_animation = len(latents.shape) == 5
         if is_animation:
@@ -2720,7 +2736,6 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                 else:
                     if is_animation:
                         controlnet_cond = rearrange(controlnet_cond, "b c f h w -> (b f) c h w")
-
                     down_samples, mid_sample = self.controlnets[name](
                         latent_input,
                         timestep,
@@ -4301,7 +4316,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         new_xs = np.linspace(0, 1, num_steps)
         new_ys = np.interp(new_xs, xs, ys)
         
-        interped_ys = np.exp(new_ys)[::-1].copy()
+        interped_ys = np.exp(new_ys)[::-1].copy().astype(int)
         return interped_ys
 
     @torch.no_grad()
@@ -4391,17 +4406,17 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
         image = self.standardize_image(
             image,
             animation_frames=animation_frames,
-            batch_size=batch_size,
+            batch_size=batch_size * num_results_per_prompt,
         )
         mask = self.standardize_image(
             mask,
             animation_frames=animation_frames,
-            batch_size=batch_size,
+            batch_size=batch_size * num_results_per_prompt,
         )
         control_images = self.standardize_control_images( # type: ignore[assignment]
             control_images,
             animation_frames=animation_frames,
-            batch_size=batch_size,
+            batch_size=batch_size * num_results_per_prompt,
         )
 
         if ip_adapter_images is not None:
@@ -4535,7 +4550,9 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
             if num_inference_steps == len(optimized_schedule):
                 self.scheduler.set_timesteps(timesteps=optimized_schedule, device=device)
             else:
-                self.scheduler.set_timesteps(timesteps=self.loglinear_interp(optimized_schedule, num_inference_steps), device=device)
+                optimized_schedule = self.loglinear_interp(optimized_schedule, num_inference_steps)
+                logger.info(f"Optimized schedule for {num_inference_steps} steps: {optimized_schedule}")
+                self.scheduler.set_timesteps(optimized_schedule, device=device)
         else:
             self.scheduler.set_timesteps(num_inference_steps, device=device) # type: ignore[attr-defined]
 
@@ -5030,7 +5047,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                                         height=height,
                                         width=width,
                                         batch_size=batch_size,
-                                        num_results_per_prompt=num_results_per_prompt,
+                                        num_results_per_prompt=1,
                                         device=device,
                                         dtype=encoded_prompts.dtype,
                                         do_classifier_free_guidance=do_classifier_free_guidance,
@@ -5456,8 +5473,8 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                 # Unload UNet to free memory
                 if offload_models:
                     self.unet.to("cpu")
-                    if self.unet_2 is not None:
-                        self.unet_2.to("cpu")
+#                    if self.unet_2 is not None:
+#                        self.unet_2.to("cpu")
                     empty_cache()
 
                 # Load VAE if decoding
