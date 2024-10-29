@@ -3505,7 +3505,6 @@ class DiffusionPipelineManager:
 
                 if "16" in str(self.dtype):
                     kwargs["build_half"] = True
-                    kwargs["variant"] = "fp16"
 
                 if kwargs["vae"] is None:
                     kwargs.pop("vae")
@@ -3525,9 +3524,6 @@ class DiffusionPipelineManager:
                 if not self.is_sdxl:
                     kwargs["tokenizer_2"] = None
                     kwargs["text_encoder_2"] = None
-
-                if "16" in str(self.dtype):
-                    kwargs["variant"] = "fp16"
 
                 if kwargs["vae"] is None:
                     kwargs.pop("vae")
@@ -3678,7 +3674,6 @@ class DiffusionPipelineManager:
 
                 if "16" in str(self.dtype):
                     kwargs["build_half"] = True
-                    kwargs["variant"] = "fp16"
 
                 if kwargs["vae"] is None:
                     kwargs.pop("vae")
@@ -3702,9 +3697,6 @@ class DiffusionPipelineManager:
                 else:
                     kwargs["text_encoder_2"] = None
                     kwargs["tokenizer_2"] = None
-
-                if "16" in str(self.dtype):
-                    kwargs["variant"] = "fp16"
 
                 if kwargs["vae"] is None:
                     kwargs.pop("vae")
@@ -3865,7 +3857,6 @@ class DiffusionPipelineManager:
                     kwargs["tokenizer_2"] = None
 
                 if "16" in str(self.dtype):
-                    kwargs["variant"] = "fp16"
                     kwargs["build_half"] = True
 
                 if kwargs["vae"] is None:
@@ -3888,8 +3879,6 @@ class DiffusionPipelineManager:
                     kwargs["tokenizer_2"] = None
                     kwargs["text_encoder_2"] = None
                     kwargs["tokenizer_2"] = None
-                if "16" in str(self.dtype):
-                    kwargs["variant"] = "fp16"
 
                 if kwargs["vae"] is None:
                     kwargs.pop("vae")
@@ -4054,7 +4043,6 @@ class DiffusionPipelineManager:
                     kwargs["text_encoder_2"] = None
                     kwargs["tokenizer_2"] = None
                 if "16" in str(self.dtype):
-                    kwargs["variant"] = "fp16"
                     kwargs["build_half"] = True
 
                 if kwargs["vae"] is None:
@@ -4076,8 +4064,6 @@ class DiffusionPipelineManager:
                     kwargs["tokenizer_2"] = None
                     kwargs["text_encoder_2"] = None
                     kwargs["tokenizer_2"] = None
-                if "16" in str(self.dtype):
-                    kwargs["variant"] = "fp16"
 
                 if kwargs["vae"] is None:
                     kwargs.pop("vae")

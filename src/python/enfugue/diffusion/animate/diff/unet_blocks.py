@@ -41,7 +41,7 @@ def get_down_block(
 ):
     down_block_type = down_block_type[7:] if down_block_type.startswith("UNetRes") else down_block_type
     if down_block_type.endswith("2D"):
-        from diffusers.models.unet_2d_blocks import get_down_block as get_down_block_2d
+        from diffusers.models.unets.unet_2d_blocks import get_down_block as get_down_block_2d
         return get_down_block_2d(
             down_block_type,
             num_layers=num_layers,

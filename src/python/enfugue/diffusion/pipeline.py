@@ -4542,6 +4542,7 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
             logger.warning(f"Strength and steps combination will result in no inference steps, changing `num_inference_steps` to {required_steps}")
             num_inference_steps = required_steps
 
+        """
         if "timesteps" in set(inspect.signature(self.scheduler.set_timesteps).parameters.keys()):
             if self.is_sdxl:
                 optimized_schedule = [999, 845, 730, 587, 443, 310, 193, 116, 53, 13, 0]
@@ -4554,7 +4555,8 @@ class EnfugueStableDiffusionPipeline(StableDiffusionPipeline):
                 logger.info(f"Optimized schedule for {num_inference_steps} steps: {optimized_schedule}")
                 self.scheduler.set_timesteps(optimized_schedule, device=device)
         else:
-            self.scheduler.set_timesteps(num_inference_steps, device=device) # type: ignore[attr-defined]
+        """
+        self.scheduler.set_timesteps(num_inference_steps, device=device) # type: ignore[attr-defined]
 
         if image is not None and ((strength is not None and strength < 1.0) or denoising_start is not None):
             # Scale timesteps by strength

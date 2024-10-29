@@ -27,7 +27,7 @@ from torch.nn import functional as F
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.utils import BaseOutput, logging
 from diffusers.models.embeddings import TimestepEmbedding, Timesteps
-from diffusers.models.unet_2d_blocks import CrossAttnDownBlock2D, DownBlock2D
+from diffusers.models.unets.unet_2d_blocks import CrossAttnDownBlock2D, DownBlock2D
 from diffusers.models.modeling_utils import ModelMixin
 
 from enfugue.diffusion.animate.diff.resnet import (
@@ -39,7 +39,7 @@ from enfugue.diffusion.animate.diff.unet_blocks import (
     get_down_block,
 )
 
-from diffusers.models.unet_2d_condition import UNet2DConditionModel
+from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 

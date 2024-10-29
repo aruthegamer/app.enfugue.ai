@@ -223,7 +223,6 @@ def chat(
         debug=debug
     )
     from enfugue.diffusion.manager import DiffusionPipelineManager
-    from enfugue.discord.bots.puck.role import Puck, Titania
     manager = DiffusionPipelineManager(configuration)
     
     if gemma:
@@ -316,39 +315,6 @@ def run(
             click.echo(termcolor.colored(traceback.format_exc(), "red"))
     finally:
         click.echo("Goodbye!")
-
-@main.command(short_help="Runs the discord bot.")
-@click.option("-p", "--prefix", help="Sets the command prefix.", default="$", show_default=True)
-@click.option("-c", "--config", help="An optional path to a configuration file to use instead of the default.")
-@click.option("-m", "--merge", is_flag=True, default=False, help="When set, merge the passed configuration with the default configuration instead of replacing it.")
-@click.option("-o", "--overrides", help="an optional json object containing override configuration.")
-@click.option("-t", "--token", help="An optional token to use instead of the one in the configuration.")
-@click.option("-d", "--debug", help="Enable debug logging.", is_flag=True, default=False)
-def discord(
-    config: Optional[str] = None,
-    token: Optional[str] = None,
-    merge: bool = False,
-    overrides: str = None,
-    prefix: str = "$",
-    debug: bool = False
-) -> None:
-    """
-    Runs the discord bot.
-    """
-    from enfugue.discord.bots import Puck
-    with get_context(debug):
-        configuration = get_configuration(
-            config,
-            overrides=overrides,
-            merge=merge,
-            debug=debug
-        )
-        if token is None:
-            try:
-                token = configuration["enfugue"]["token"]["discord"]
-            except KeyError:
-                raise ConfigurationError("No Discord token found in configuration, please specify one with the --token option or use the configuration key 'enfugue.token.discord'.")
-        Puck.execute(token, configuration)
 
 @click.argument("file_path")
 @click.option("-d", "--debug", help="Enable debug logging.", is_flag=True, default=False)
